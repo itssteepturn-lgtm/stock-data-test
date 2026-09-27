@@ -118,9 +118,9 @@ META_FILE = pathlib.Path("data/meta.json")
 TEST_CODES = ['300642','300740','002579','002584','003001','301086','600880','002708','600127','600088','688175','301390','603248','688004']
 TEST_MODE = True
 MAX_DAYS_KEPT = 150
-DEEP_SEED_DAYS = 90
+DEEP_SEED_DAYS = 150
 TOPUP_DAYS = 10
-TIME_BUDGET_SECONDS = 12*60
+TIME_BUDGET_SECONDS = 10*60
 
 def bs_code(code):
     if code.startswith('6') or code.startswith('5') or code.startswith('9') or code.startswith('688'):
@@ -216,7 +216,7 @@ def main():
         "total": len(codes),
         "updated": len(codes),
         "ranAt": datetime.datetime.now().isoformat(),
-        "note": "test-warehouse with precomputed cost/zq",
+        "note": "test-14 150天 带cost/zq  a=volume b=amount=>avg turnover=turn 精确",
         "testCodes": TEST_CODES
     }, ensure_ascii=False))
 
