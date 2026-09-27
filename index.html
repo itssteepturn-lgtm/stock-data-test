@@ -100,16 +100,7 @@
     <h1>盘面</h1>
     <div id="clock">--:--:--</div>
   </header>
-  <div style="display:flex; gap:8px; align-items:center; margin:-4px 2px 8px;">
-    <select id="source-switch" style="background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:6px; padding:5px 8px; font-size:12px;">
-      <option value="backend">后台预计算(固定历史)</option>
-      <option value="east">东财(历史固定+实时延续)</option>
-      <option value="tencent">腾讯(历史固定+实时延续)</option>
-    </select>
-    <span id="source-hint" style="font-size:11px; color:var(--dim);">14只测试自选</span>
-  </div>
-  <div id="data-status"
- style="font-size:11px; color:var(--dim); margin:-10px 2px 14px; display:flex; justify-content:space-between; align-items:center;">
+  <div id="data-status" style="font-size:11px; color:var(--dim); margin:-10px 2px 14px; display:flex; justify-content:space-between; align-items:center;">
     <span id="data-status-text">数据状态：检查中…</span>
     <span id="data-status-refresh" style="color:var(--accent); cursor:pointer;">立即更新</span>
   </div>
@@ -262,7 +253,8 @@ function secidToTencent(secid){
   return 'sz'+code;
 }
 
-async function getDailyKlineTencent(secid, limit){
+async function getDailyKlineTencent(secid, limit){ if(true) throw new Error('tencent disabled in east-only');
+
   const tcode = secidToTencent(secid);
   const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${tcode},day,,,${limit},qfq`;
   const res = await fetch(url, {cache:'no-store'});
@@ -343,12 +335,17 @@ async function getDailyKline(secid, limit=60){
 }
 
 // ↓↓↓ 把这里改成你那个【公开数据仓库】的 用户名/仓库名，分支名一般是 main ↓↓↓
-const DATA_REPO = 'itssteepturn-lgtm/stock-data-test-test';
+const DATA_REPO = 'itssteepturn-lgtm/stock-data-test';
 const DATA_BRANCH = 'main';
-const TEST_WAREHOUSE = true;
+const EAST_ONLY = true;
+const EAST_DAYS = 150;
 const TEST_CODES = ['300642','300740','002579','002584','003001','301086','600880','002708','600127','600088','688175','301390','603248','688004'];
-let DATA_SOURCE = 'backend'; // backend | east | tencent
-
+const TEST_INDEXES = [
+  {code:'1.000001', name:'上证指数', short:'000001', type:'index'},
+  {code:'0.399001', name:'深证成指', short:'399001', type:'index'},
+  {code:'0.399006', name:'创业板指', short:'399006', type:'index'},
+  {code:'1.000688', name:'科创50', short:'000688', type:'index'},
+];
 
 // 尝试读公开数据仓库里每日自动采集的数据（跨仓库，走 raw.githubusercontent.com）
 async function getLocalHistory(secid){
@@ -361,25 +358,20 @@ async function getLocalHistory(secid){
   return arr;
 }
 
-// 带成交额、换手率的完整历史（给筹码分布/COST/WINNER用，需要较长历史才准）
 async function getFullHistory(secid, limit=480){
-  try{
-    const local = await getLocalHistory(secid);
-    return local.slice(-limit);
-  }catch(e){
-    // 本地没有这只股票的数据（还没跑过每日采集，或者这只股票不在自选股代码清单里），
-    // 照旧走实时接口
-  }
+  // 纯东财150天，a+b=c
   const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}`+
     `&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`+
-    `&klt=101&fqt=1&end=20500101&lmt=${limit}`;
+    `&klt=101&fqt=1&end=20500101&lmt=${Math.min(limit,150)}`;
   const data = await getJSON(url);
-  if(!data || !data.data || !data.data.klines) throw new Error('no data');
+  if(!data || !data.data || !data.data.klines) throw new Error('east no data');
   return data.data.klines.map(row=>{
-    const f = row.split(',');
+    const f=row.split(',');
+    const vol=+f[5]; const amount=+f[6]; const turnover=f[10]?+f[10]:0;
     return {
       date:f[0], open:+f[1], close:+f[2], high:+f[3], low:+f[4],
-      vol:+f[5], amount:+f[6], turnover:+f[10] // 换手率，单位：% (如 1.23 表示 1.23%)
+      vol:vol, amount:amount, turnover:turnover,
+      avg: vol>0 ? amount/(vol*100) : +f[2]
     };
   });
 }
@@ -391,42 +383,31 @@ function todayStrLocal(){
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
 }
 
-// 实时行情，拼成一条"临时的今日K线"，在正式的每日采集数据还没收录今天之前，先顶上用
+// 实时行情，东财精确 a+b=c：a=vol(f47) b=amount(f48) => avg=b/(a*100), turnover=f8
 async function getLiveQuoteBar(secid){
   const url = `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}`+
     `&fltt=2&invt=2&fields=f43,f44,f45,f46,f47,f48,f8`;
   const data = await getJSON(url);
-  if(!data || !data.data) throw new Error('no live quote');
-  const d = data.data;
-  if(d.f43==null || d.f43==='-') throw new Error('停牌或无效行情');
-  if(!d.f47 || +d.f47<=0) throw new Error('今天还没有实际成交（非交易日，或还没开盘）');
+  if(!data || !data.data) throw new Error('no live');
+  const d=data.data;
+  if(d.f43==null || d.f43==='-') throw new Error('停牌');
+  if(!d.f47 || +d.f47<=0) throw new Error('无成交');
+  const vol=+d.f47; const amount=+d.f48;
   return {
     date: todayStrLocal(),
     open:+d.f46, close:+d.f43, high:+d.f44, low:+d.f45,
-    vol:+d.f47, amount:+d.f48, turnover:+d.f8
+    vol:vol, amount:amount, turnover:+d.f8,
+    avg: vol>0 ? amount/(vol*100) : +d.f43
   };
 }
 
 const histCache = {}; // secid -> 已收盘的历史（不含今天），减少重复抓取
 
 async function getHistBars(secid, limit){
-  if(TEST_WAREHOUSE && DATA_SOURCE==='backend'){
-    const code = secid.split('.')[1];
-    try{
-      const url = `https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/stocks/${code}.json?t=${Date.now()}`;
-      const res = await fetch(url, {cache:'no-store'});
-      if(res.ok){
-        const j = await res.json();
-        const bars = j.bars || j;
-        const sliced = bars.slice(-limit);
-        histCache[secid]=sliced;
-        return sliced;
-      }
-    }catch(e){}
-  }
-  if(histCache[secid] && histCache[secid].length >= Math.min(limit, 2000)) return histCache[secid];
-  const bars = await getFullHistory(secid, limit);
-  histCache[secid] = bars;
+  const lim = Math.min(limit,150);
+  if(histCache[secid] && histCache[secid].length >= lim) return histCache[secid];
+  const bars = await getFullHistory(secid, lim);
+  histCache[secid]=bars;
   return bars;
 }
 
@@ -441,77 +422,30 @@ function isValidLiveBar(liveBar, prevBar){
 
 async function buildStockEntry(secid, limit){
   const histBars = await getHistBars(secid, limit);
-  const baseResult = computeIndicatorSeries(histBars);
-  // 后台固定版：历史就是全部，不拼实时
-  if(TEST_WAREHOUSE && DATA_SOURCE==='backend'){
-    return { bars: histBars, cost50: baseResult.cost50, cost75: baseResult.cost75, cost90: baseResult.cost90, zq1: baseResult.zq1, zq: baseResult.zq, liveOverlay:false, _fixed:true };
-  }
-  // 东财/腾讯实时延续：历史固定，实时接到最后
-  let liveBar=null;
-  try{
-    if(DATA_SOURCE==='east'){
-      const url = `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fltt=2&invt=2&fields=f43,f44,f45,f46,f47,f48,f8`;
-      const data = await getJSON(url);
-      const d=data.data;
-      liveBar = { date: todayStrLocal(), open:+d.f46, close:+d.f43, high:+d.f44, low:+d.f45, vol:+d.f47, amount:+d.f48, turnover:+d.f8 };
-    }else if(DATA_SOURCE==='tencent'){
-      const tcode = secidToTencent(secid);
-      // 尝试用腾讯日线最后一条的额和量，再用 capital 算换手
-      const urlK = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${tcode},day,,,1,qfq`;
-      const resK = await fetch(urlK, {cache:'no-store'}).then(r=>r.json());
-      const stockData = resK.data[tcode];
-      const arr = stockData.qfqday || stockData.day;
-      const row = arr[arr.length-1];
-      // row: [date, open, close, high, low, vol, amount?]
-      let vol = +row[5];
-      let amount = row[6] ? +row[6] : 0;
-      let turnover = 1.5;
-      try{
-        const urlCap = `https://web.ifzq.gtimg.cn/appstock/app/capital/query?code=${tcode}`;
-        const capRes = await fetch(urlCap, {cache:'no-store'}).then(r=>r.json());
-        // 尝试解析流通股本
-        const capData = capRes.data && capRes.data[tcode];
-        const ltsz = capData && (capData.ltsz || capData.ltgb || capData.zz);
-        if(ltsz){
-          // ltsz 可能是万股，需要转换，假设单位是万股
-          const liutong = parseFloat(ltsz)*10000; // 股
-          if(liutong>0) turnover = vol*100 / liutong *100;
-        }
-      }catch(e){}
-      liveBar = { date: todayStrLocal(), open:+row[1], close:+row[2], high:+row[3], low:+row[4], vol:vol, amount:amount, turnover:turnover };
+  let bars = histBars;
+  const today = todayStrLocal();
+  let liveOverlay = false;
+  if(!bars.length || bars[bars.length-1].date !== today){
+    try{
+      const liveBar = await getLiveQuoteBar(secid);
+      const prevBar = bars.length ? bars[bars.length-1] : null;
+      if(liveBar.date === today && isValidLiveBar(liveBar, prevBar)){
+        bars = bars.concat([liveBar]);
+        liveOverlay = true;
+      }
+    }catch(e){
+      // 拿不到实时行情（比如停牌），就只用已收盘的历史，不强求
     }
-  }catch(e){}
-  if(liveBar && isValidLiveBar(liveBar, histBars[histBars.length-1])){
-    // 在历史模型上叠加今日实时
-    const lows = histBars.map(b=>b.low), highs = histBars.map(b=>b.high);
-    const minP = Math.min(...lows)*0.98, maxP = Math.max(...highs)*1.02;
-    const model = new ChipModel(minP, maxP, 300);
-    for(let b of histBars){
-      let avg = b.vol>0 ? b.amount/(b.vol*100) : b.close;
-      if(!isFinite(avg)||avg<=0) avg=b.close;
-      model.addDay(b.low,b.high,avg,b.turnover);
-    }
-    let avgLive = liveBar.vol>0 ? liveBar.amount/(liveBar.vol*100) : liveBar.close;
-    if(!isFinite(avgLive)||avgLive<=0) avgLive=liveBar.close;
-    model.addDay(liveBar.low, liveBar.high, avgLive, liveBar.turnover);
-    const bars2 = histBars.concat([liveBar]);
-    return {
-      bars: bars2,
-      cost50: baseResult.cost50.concat([model.percentile(50)]),
-      cost75: baseResult.cost75.concat([model.percentile(75)]),
-      cost90: baseResult.cost90.concat([model.percentile(90)]),
-      zq1: baseResult.zq1.concat([model.winnerBelow(bars2.slice(-10).reduce((s,x)=>s+x.close*x.vol,0)/bars2.slice(-10).reduce((s,x)=>s+x.vol,0))]),
-      zq: baseResult.zq.concat([model.winnerBelow(avgLive)]),
-      liveOverlay:true, _fixed:false
-    };
   }
-  return { bars: histBars, cost50: baseResult.cost50, cost75: baseResult.cost75, cost90: baseResult.cost90, zq1: baseResult.zq1, zq: baseResult.zq, liveOverlay:false, _fixed:true };
+  const { cost50, cost75, cost90, zq1, zq } = computeIndicatorSeries(bars);
+  return { bars, cost50, cost75, cost90, zq1, zq, liveOverlay };
 }
 
 // 全市场代码+名称清单（每日采集脚本写的），选股/回测现在用这个，不再局限于自选股
 let fullMarketListCache = null;
 async function getFullMarketList(){
-  if(TEST_WAREHOUSE){
+  // 纯东财测试版：只跑14只+指数
+  if(EAST_ONLY){
     if(fullMarketListCache) return fullMarketListCache;
     fullMarketListCache = TEST_CODES.map(c=>{ const secid=codeToSecid(c); return {code:secid, name:c, short:c, type:'stock'}; });
     return fullMarketListCache;
@@ -555,20 +489,15 @@ function extractHHMM(raw){
 }
 
 async function getIntraday(secid){
-  try{
-    const url = `https://push2.eastmoney.com/api/qt/stock/trends2/get?secid=${secid}`+
-      `&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f52,f53,f54,f55,f56,f57,f58`+
-      `&ndays=1&iscr=0`;
-    const data = await getJSON(url);
-    if(!data || !data.data || !data.data.trends) throw new Error('no data');
-    // 每行: 时间,开,收(当前价),高,低,成交量,成交额,均价
-    return data.data.trends.map(row=>{
-      const f = row.split(',');
-      return { time:extractHHMM(f[0]), price:+f[2], avg:+f[7] };
-    }).filter(t=>t.time);
-  }catch(e){
-    return await getIntradayTencent(secid); // 东方财富整体失败时兜底
-  }
+  const url = `https://push2.eastmoney.com/api/qt/stock/trends2/get?secid=${secid}`+
+    `&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f52,f53,f54,f55,f56,f57,f58`+
+    `&ndays=1&iscr=0`;
+  const data = await getJSON(url);
+  if(!data || !data.data || !data.data.trends) throw new Error('east no trends');
+  return data.data.trends.map(row=>{
+    const f=row.split(',');
+    return { time:extractHHMM(f[0]), price:+f[2], avg:+f[7] };
+  }).filter(t=>t.time);
 }
 
 // 历史某一天的分时（1分钟K线）。用不复权价格（fqt=0）——分时看的是当天真实成交价，
@@ -682,17 +611,6 @@ class ChipModel{
 
 // 对一段历史逐日滚动，产出 COST50/75/90 和 ZQ1/ZQ 的时间序列（跟 bars 一一对应）
 function computeIndicatorSeries(bars){
-  if(bars.length && bars[0].cost50!=null){
-    return {
-      cost50: bars.map(b=>b.cost50),
-      cost75: bars.map(b=>b.cost75),
-      cost90: bars.map(b=>b.cost90),
-      zq1: bars.map(b=>b.zq1),
-      zq: bars.map(b=>b.zq),
-      _precomputed: true
-    };
-  }
-
   const lows = bars.map(b=>b.low), highs = bars.map(b=>b.high);
   const minP = Math.min(...lows)*0.98, maxP = Math.max(...highs)*1.02;
   const model = new ChipModel(minP, maxP, 300);
@@ -700,7 +618,7 @@ function computeIndicatorSeries(bars){
 
   for(let i=0;i<bars.length;i++){
     const b = bars[i];
-    let avg = b.vol>0 ? b.amount/(b.vol*100) : b.close; // 当日均价（VOL 单位：手）
+    let avg = b.avg!=null ? b.avg : (b.vol>0 ? b.amount/(b.vol*100) : b.close);
     if(!isFinite(avg) || avg<=0) avg = b.close;
     model.addDay(b.low, b.high, avg, b.turnover);
 
@@ -1161,12 +1079,13 @@ async function fillRowQuote(item, row){
 async function renderIndexList(){
   const list = document.getElementById('idx-list');
   list.innerHTML = '';
-  const rows = INDEXES.map(idx => buildRow(idx, list, openDetail));
-  await Promise.all(INDEXES.map((idx,i)=> fillRowQuote(idx, rows[i])));
+  const src = (typeof TEST_INDEXES!=='undefined' && EAST_ONLY) ? TEST_INDEXES : INDEXES;
+  const rows = src.map(idx => buildRow(idx, list, openDetail));
+  await Promise.all(src.map((idx,i)=> fillRowQuote(idx, rows[i])));
 }
 
 /* ---------- 自选股：存储 + 代码转 secid + 增删 ---------- */
-const WL_KEY = 'stockapp_watchlist_test_v1';
+const WL_KEY = 'stockapp_watchlist_east150_v1';
 function loadWatchlist(){
   try{
     let wl = JSON.parse(localStorage.getItem(WL_KEY));
@@ -1179,8 +1098,9 @@ function loadWatchlist(){
     return TEST_CODES.map(c=>{ const secid=codeToSecid(c); return {code:secid, name:c, short:c, type:'stock'}; });
   }
 }
-function saveWatchlist(list){ localStorage.setItem(WL_KEY, JSON.stringify(list)); }
-
+function saveWatchlist(list){
+  localStorage.setItem(WL_KEY, JSON.stringify(list));
+}
 let editMode = false;
 
 // 6位代码 -> 东方财富 secid（1.=沪市 0.=深市/北交所）
@@ -1638,24 +1558,10 @@ setInterval(()=>{
 renderIndexList();
 renderWatchlist();
 checkDataStatus();
-const sel = document.getElementById('source-switch');
-if(sel){
-  sel.value = DATA_SOURCE;
-  sel.onchange = (e)=>{
-    DATA_SOURCE = e.target.value;
-    localStorage.setItem('test_source', DATA_SOURCE);
-    histCache={};
-    renderWatchlist();
-    const cur = window._currentDetailItem;
-    if(cur && document.getElementById('detail').classList.contains('open')) openDetail(cur);
-  };
-  const saved = localStorage.getItem('test_source');
-  if(saved){ DATA_SOURCE=saved; sel.value=saved; }
-}
-
 
 async function checkDataStatus(){
   const el = document.getElementById('data-status-text');
+  if(typeof EAST_ONLY!=='undefined' && EAST_ONLY){ el.textContent = '东财150天临时版｜a=vol b=amount => avg=b/(a*100)｜turnover=f61/f8精确｜14只+指数'; return; }
   el.textContent = '数据状态：检查中…';
   try{
     const url = `https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/meta.json?t=${Date.now()}`;
