@@ -253,8 +253,7 @@ function secidToTencent(secid){
   return 'sz'+code;
 }
 
-async function getDailyKlineTencent(secid, limit){ if(true) throw new Error('tencent disabled in east-only');
-
+async function getDailyKlineTencent_DISABLED(secid, limit){
   const tcode = secidToTencent(secid);
   const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${tcode},day,,,${limit},qfq`;
   const res = await fetch(url, {cache:'no-store'});
@@ -337,8 +336,8 @@ async function getDailyKline(secid, limit=60){
 // ↓↓↓ 把这里改成你那个【公开数据仓库】的 用户名/仓库名，分支名一般是 main ↓↓↓
 const DATA_REPO = 'itssteepturn-lgtm/stock-data-test';
 const DATA_BRANCH = 'main';
-const EAST_ONLY = true;
-const EAST_DAYS = 150;
+const TENCENT_ONLY = true;
+const TENCENT_DAYS = 150;
 const TEST_CODES = ['300642','300740','002579','002584','003001','301086','600880','002708','600127','600088','688175','301390','603248','688004'];
 const TEST_INDEXES = [
   {code:'1.000001', name:'上证指数', short:'000001', type:'index'},
@@ -346,6 +345,7 @@ const TEST_INDEXES = [
   {code:'0.399006', name:'创业板指', short:'399006', type:'index'},
   {code:'1.000688', name:'科创50', short:'000688', type:'index'},
 ];
+
 
 // 尝试读公开数据仓库里每日自动采集的数据（跨仓库，走 raw.githubusercontent.com）
 async function getLocalHistory(secid){
@@ -359,19 +359,34 @@ async function getLocalHistory(secid){
 }
 
 async function getFullHistory(secid, limit=480){
-  // 纯东财150天，a+b=c
-  const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}`+
-    `&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`+
-    `&klt=101&fqt=1&end=20500101&lmt=${Math.min(limit,150)}`;
+  // 纯腾讯150天，e+f=g
+  const tcode = secidToTencent(secid);
+  let ltgb = null;
+  try{
+    const capUrl = `https://web.ifzq.gtimg.cn/appstock/app/capital/query?code=${tcode}`;
+    const capData = await getJSON(capUrl);
+    const d = capData.data && capData.data[tcode];
+    if(d) ltgb = parseFloat(d.ltgb || d.ltsz || d.zgb || 0);
+  }catch(e){}
+  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${tcode},day,,,${Math.min(limit,150)},qfq`;
   const data = await getJSON(url);
-  if(!data || !data.data || !data.data.klines) throw new Error('east no data');
-  return data.data.klines.map(row=>{
-    const f=row.split(',');
-    const vol=+f[5]; const amount=+f[6]; const turnover=f[10]?+f[10]:0;
+  const stockData = data && data.data && data.data[tcode];
+  if(!stockData) throw new Error('tencent no data');
+  const arr = stockData.qfqday || stockData.day;
+  if(!arr || !arr.length) throw new Error('tencent empty');
+  return arr.map(row=>{
+    const vol = +row[5];
+    let amount = row[6] ? +row[6] : 0;
+    let avg = amount>0 ? amount/(vol*100) : +row[2];
+    let turnover = 0;
+    if(ltgb && ltgb>0){
+      if(ltgb>1000000) turnover = vol*100 / ltgb *100;
+      else turnover = vol / ltgb;
+    }
     return {
-      date:f[0], open:+f[1], close:+f[2], high:+f[3], low:+f[4],
-      vol:vol, amount:amount, turnover:turnover,
-      avg: vol>0 ? amount/(vol*100) : +f[2]
+      date: row[0], open:+row[1], close:+row[2], high:+row[3], low:+row[4],
+      vol: vol, amount: amount, turnover: turnover,
+      avg: avg
     };
   });
 }
@@ -383,31 +398,51 @@ function todayStrLocal(){
   return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
 }
 
-// 实时行情，东财精确 a+b=c：a=vol(f47) b=amount(f48) => avg=b/(a*100), turnover=f8
+// 腾讯实时：e=vol(手) f=amount(元) => g=avg=amount/(vol*100)  e=vol f=ltgb => g=turnover=vol/ltgb
 async function getLiveQuoteBar(secid){
-  const url = `https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}`+
-    `&fltt=2&invt=2&fields=f43,f44,f45,f46,f47,f48,f8`;
+  const tcode = secidToTencent(secid);
+  let ltgb = null;
+  try{
+    const capUrl = `https://web.ifzq.gtimg.cn/appstock/app/capital/query?code=${tcode}`;
+    const capData = await getJSON(capUrl);
+    const d = capData.data && capData.data[tcode];
+    if(d) ltgb = parseFloat(d.ltgb || d.ltsz || d.zgb || 0);
+  }catch(e){}
+  // 用 fqkline 的 qt 拿最新价、量、额、换手
+  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${tcode},day,,,1,qfq`;
   const data = await getJSON(url);
-  if(!data || !data.data) throw new Error('no live');
-  const d=data.data;
-  if(d.f43==null || d.f43==='-') throw new Error('停牌');
-  if(!d.f47 || +d.f47<=0) throw new Error('无成交');
-  const vol=+d.f47; const amount=+d.f48;
+  const stockData = data.data && data.data[tcode];
+  if(!stockData) throw new Error('tencent no live');
+  const qt = stockData.qt && stockData.qt[tcode];
+  let close=0, open=0, high=0, low=0, vol=0, amount=0, turnover=0;
+  if(qt){
+    // qt: [0..] 1 name, 2 code, 3 latest, 4 prev, 5 open, 6 vol(手), 33 high, 34 low, 37 amount, 38 turnover
+    close = +qt[3]; open = +qt[5]; high = +qt[33]; low = +qt[34]; vol = +qt[6]; amount = +qt[37]; turnover = +qt[38];
+  }else{
+    const arr = stockData.qfqday || stockData.day;
+    const row = arr[arr.length-1];
+    close = +row[2]; open = +row[1]; high = +row[3]; low = +row[4]; vol = +row[5];
+  }
+  // e+f=g 精确算
+  if(ltgb && turnover===0){
+    if(ltgb>1000000) turnover = vol*100 / ltgb *100;
+    else turnover = vol / ltgb;
+  }
+  let avg = vol>0 && amount>0 ? amount/(vol*100) : close;
   return {
     date: todayStrLocal(),
-    open:+d.f46, close:+d.f43, high:+d.f44, low:+d.f45,
-    vol:vol, amount:amount, turnover:+d.f8,
-    avg: vol>0 ? amount/(vol*100) : +d.f43
+    open: open, close: close, high: high, low: low,
+    vol: vol, amount: amount, turnover: turnover,
+    avg: avg
   };
 }
 
 const histCache = {}; // secid -> 已收盘的历史（不含今天），减少重复抓取
 
 async function getHistBars(secid, limit){
-  const lim = Math.min(limit,150);
-  if(histCache[secid] && histCache[secid].length >= lim) return histCache[secid];
-  const bars = await getFullHistory(secid, lim);
-  histCache[secid]=bars;
+  if(histCache[secid] && histCache[secid].length >= Math.min(limit, 2000)) return histCache[secid];
+  const bars = await getFullHistory(secid, limit);
+  histCache[secid] = bars;
   return bars;
 }
 
@@ -444,8 +479,7 @@ async function buildStockEntry(secid, limit){
 // 全市场代码+名称清单（每日采集脚本写的），选股/回测现在用这个，不再局限于自选股
 let fullMarketListCache = null;
 async function getFullMarketList(){
-  // 纯东财测试版：只跑14只+指数
-  if(EAST_ONLY){
+  if(TENCENT_ONLY){
     if(fullMarketListCache) return fullMarketListCache;
     fullMarketListCache = TEST_CODES.map(c=>{ const secid=codeToSecid(c); return {code:secid, name:c, short:c, type:'stock'}; });
     return fullMarketListCache;
@@ -489,15 +523,18 @@ function extractHHMM(raw){
 }
 
 async function getIntraday(secid){
-  const url = `https://push2.eastmoney.com/api/qt/stock/trends2/get?secid=${secid}`+
-    `&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f52,f53,f54,f55,f56,f57,f58`+
-    `&ndays=1&iscr=0`;
+  // 腾讯分时：e=price f=vol => g=amount，精确算分时均价
+  const tcode = secidToTencent(secid);
+  const url = `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${tcode}`;
   const data = await getJSON(url);
-  if(!data || !data.data || !data.data.trends) throw new Error('east no trends');
-  return data.data.trends.map(row=>{
-    const f=row.split(',');
-    return { time:extractHHMM(f[0]), price:+f[2], avg:+f[7] };
-  }).filter(t=>t.time);
+  const stockData = data.data && data.data[tcode];
+  const rows = stockData && stockData.data && stockData.data.data;
+  if(!rows || !rows.length) throw new Error('tencent no minute');
+  return rows.map(line=>{
+    const parts = line.trim().split(/\s+/);
+    const hhmm = parts[0];
+    return { time: hhmm.slice(0,2)+':'+hhmm.slice(2), price:+parts[1] };
+  });
 }
 
 // 历史某一天的分时（1分钟K线）。用不复权价格（fqt=0）——分时看的是当天真实成交价，
@@ -1079,13 +1116,13 @@ async function fillRowQuote(item, row){
 async function renderIndexList(){
   const list = document.getElementById('idx-list');
   list.innerHTML = '';
-  const src = (typeof TEST_INDEXES!=='undefined' && EAST_ONLY) ? TEST_INDEXES : INDEXES;
+  const src = (typeof TEST_INDEXES!=='undefined' && TENCENT_ONLY) ? TEST_INDEXES : INDEXES;
   const rows = src.map(idx => buildRow(idx, list, openDetail));
   await Promise.all(src.map((idx,i)=> fillRowQuote(idx, rows[i])));
 }
 
 /* ---------- 自选股：存储 + 代码转 secid + 增删 ---------- */
-const WL_KEY = 'stockapp_watchlist_east150_v1';
+const WL_KEY = 'stockapp_watchlist_tencent150_v1';
 function loadWatchlist(){
   try{
     let wl = JSON.parse(localStorage.getItem(WL_KEY));
@@ -1561,7 +1598,7 @@ checkDataStatus();
 
 async function checkDataStatus(){
   const el = document.getElementById('data-status-text');
-  if(typeof EAST_ONLY!=='undefined' && EAST_ONLY){ el.textContent = '东财150天临时版｜a=vol b=amount => avg=b/(a*100)｜turnover=f61/f8精确｜14只+指数'; return; }
+  if(typeof TENCENT_ONLY!=='undefined' && TENCENT_ONLY){ el.textContent = '腾讯150天临时版｜e=vol f=amount=>avg=amount/(vol*100)｜e=vol f=ltgb=>turnover=vol/ltgb｜14只+指数｜a+b=c精确'; return; }
   el.textContent = '数据状态：检查中…';
   try{
     const url = `https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/meta.json?t=${Date.now()}`;
