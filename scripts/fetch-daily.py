@@ -125,7 +125,7 @@ def bs_code(code):
         return "sz."+code
 
 def get_all_a_codes():
-    # 周日/节假日当天query_all_stock会返回0，改为向前回溯10天找交易日
+    # 周日/节假日当天query_all_stock会返回0，改为向前回溯10天找交易日，且只留status=1
     for offset in range(0, 10):
         day = (datetime.date.today() - timedelta(days=offset)).strftime("%Y-%m-%d")
         try:
@@ -133,22 +133,31 @@ def get_all_a_codes():
             codes=[]
             while (rs.error_code=='0') & rs.next():
                 row = rs.get_row_data()
+                # row[0]= sh.600000, row[1]= 1/0  1=上市 0=退市
+                if len(row) < 2:
+                    continue
+                status = row[1]
+                if status != '1':
+                    continue  # 只留上市的，过滤退市
                 code_full = row[0]
                 if '.' not in code_full:
                     continue
                 code = code_full.split('.')[1]
                 if len(code)!=6 or not code.isdigit():
                     continue
+                # 再过滤：只留A股常见开头 0,3,6,8,30,68 避免B股等
+                if not (code.startswith('0') or code.startswith('3') or code.startswith('6') or code.startswith('8')):
+                    continue
                 codes.append(code)
             codes = sorted(list(set(codes)))
             if len(codes) >= 100:
-                print(f"get_all_a_codes from {day} got {len(codes)}")
+                print(f"get_all_a_codes from {day} got {len(codes)} (仅上市)")
                 return codes
         except Exception as e:
             print(f"query_all_stock {day} fail {e}")
             continue
 
-    # 兜底1：读本地stock_list.json
+    # 兜底：读本地stock_list.json
     if STOCK_LIST_FILE.exists():
         try:
             j = json.loads(STOCK_LIST_FILE.read_text())
@@ -160,19 +169,7 @@ def get_all_a_codes():
         except Exception as e:
             print(f"local stock_list fallback fail {e}")
 
-    # 兜底2：尝试读checkpoint里的done
-    if CHECKPOINT_FILE.exists():
-        try:
-            j = json.loads(CHECKPOINT_FILE.read_text())
-            codes = j.get('done', [])
-            if len(codes) >= 100:
-                print(f"fallback to checkpoint done {len(codes)}")
-                return codes
-        except:
-            pass
-
-    # 最后兜底
-    print("all fallbacks failed, return empty, will be 0")
+    print("all fallbacks failed, return empty")
     return []
 
 def fetch_bars(code, days):
