@@ -77,7 +77,7 @@
 <body>
 <div id="app">
   <header>
-    <h1>盘面 · 正式版 test 150天</h1>
+    <h1>盘面 · 正式版 全市场 150天</h1>
     <div id="clock">--:--:--</div>
   </header>
   <div id="data-status" style="font-size:10px;color:var(--dim);margin:-8px 2px 12px;display:flex;justify-content:space-between;align-items:center;gap:8px;">
@@ -547,7 +547,18 @@ async function poolRun(items, worker, concurrency, onProgress){
   await Promise.all(Array.from({length:concurrency},run)); if(onProgress) onProgress(done,items.length); return results;
 }
 async function getFullMarketList(){
-  // test仓只有14只，正式全市场时这里改成读 data/stock_list.json
+  // 正式全市场：优先读 data/stock_list.json（后台生成的全A清单），失败回退到14只
+  try{
+    const urls=[
+      `./data/stock_list.json?t=${Date.now()}`,
+      `https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/stock_list.json?t=${Date.now()}`,
+      `https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/stock_list.json?t=${Date.now()}`
+    ];
+    const j = await fetchJsonWithFallback(urls, 4000);
+    if(Array.isArray(j) && j.length>100){
+      return j;
+    }
+  }catch(e){}
   return TEST_CODES.map(c=>{ const secid=codeToSecid(c); return {code:secid,name:c,short:c,type:'stock'}; });
 }
 function matchesBoardFilter(item){ return true; }
@@ -638,7 +649,7 @@ document.getElementById('run-backtest-btn').onclick=async()=>{
 // ---- 顶部 ----
 async function checkDataStatus(){
   const el=document.getElementById('data-status-text');
-  el.textContent='正式版 test 150天 同域+jsDelivr加速 0:30自动';
+  el.textContent='正式版 全市场 150天 同域+jsDelivr加速 0:30自动';
   try{
     const meta=await fetchJsonWithFallback(buildMetaUrls(),3500);
     const timeStr=meta.ranAt?new Date(meta.ranAt).toLocaleString():'--';
