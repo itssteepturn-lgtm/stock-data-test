@@ -295,94 +295,42 @@ async function getLocalIndexHistory(secid){
 }
 
 async function getDailyKlineRaw(secid, limit){
-  try{
-    const local = await getLocalIndexHistory(secid);
-    return local.slice(-limit);
-  }catch(e){}
-  try{
-    const local = await getLocalHistory(secid);
-    return local.slice(-limit);
-  }catch(e){}
-  try{
-    const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}`+
-      `&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f58`+
-      `&klt=101&fqt=1&end=20500101&lmt=${limit}`;
-    const data = await getJSON(url);
-    if(!data || !data.data || !data.data.klines) throw new Error('no data');
-    // 每行: 日期,开,收,高,低,成交量,成交额,振幅,涨跌幅,涨跌额,换手率
-    return data.data.klines.map(row=>{
-      const f = row.split(',');
-      return { date:f[0], open:+f[1], close:+f[2], high:+f[3], low:+f[4], vol:+f[5] };
-    });
-  }catch(e){
-    return await getDailyKlineTencent(secid, limit); // 东方财富整体失败时兜底
-  }
-}
-
-async function getDailyKline(secid, limit=60){
-  const bars = await getDailyKlineRaw(secid, limit);
-  const today = todayStrLocal();
-  if(bars.length && bars[bars.length-1].date === today) return bars;
-  try{
-    const liveBar = await getLiveQuoteBar(secid);
-    const prevBar = bars.length ? bars[bars.length-1] : null;
-    if(liveBar.date === today && isValidLiveBar(liveBar, prevBar)){
-      return bars.concat([liveBar]);
-    }
-  }catch(e){ /* 拿不到实时行情，就只显示已收盘的历史 */ }
-  return bars;
-}
-
-// ↓↓↓ 把这里改成你那个【公开数据仓库】的 用户名/仓库名，分支名一般是 main ↓↓↓
-const DATA_REPO = 'itssteepturn-lgtm/stock-data-test';
-const DATA_BRANCH = 'main';
-const TENCENT_ONLY = true;
-const TENCENT_DAYS = 150;
-const TEST_CODES = ['300642','300740','002579','002584','003001','301086','600880','002708','600127','600088','688175','301390','603248','688004'];
-const TEST_INDEXES = [
-  {code:'1.000001', name:'上证指数', short:'000001', type:'index'},
-  {code:'0.399001', name:'深证成指', short:'399001', type:'index'},
-  {code:'0.399006', name:'创业板指', short:'399006', type:'index'},
-  {code:'1.000688', name:'科创50', short:'000688', type:'index'},
-];
-
-
-// 尝试读公开数据仓库里每日自动采集的数据（跨仓库，走 raw.githubusercontent.com）
-async function getLocalHistory(secid){
-  const code = secid.split('.')[1];
-  const url = `https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/stocks/${code}.json`;
-  const res = await fetch(url, {cache:'no-store'});
-  if(!res.ok) throw new Error('no local data');
-  const arr = await res.json();
-  if(!Array.isArray(arr) || arr.length < 30) throw new Error('local data too short'); // 太短就还是走实时接口
-  return arr;
-}
-
-async function getFullHistory(secid, limit=480){
-  // 纯腾讯150天，e+f=g
   const tcode = secidToTencent(secid);
   let ltgb = null;
+  let ltgbUnit = 'wan';
   try{
     const capUrl = `https://web.ifzq.gtimg.cn/appstock/app/capital/query?code=${tcode}`;
     const capData = await getJSON(capUrl);
     const d = capData.data && capData.data[tcode];
-    if(d) ltgb = parseFloat(d.ltgb || d.ltsz || d.zgb || 0);
+    if(d){
+      const raw = d.ltgb || d.ltsz || d.zgb || 0;
+      ltgb = parseFloat(raw);
+      if(ltgb>1e9) ltgbUnit='gu';
+    }
   }catch(e){}
   const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${tcode},day,,,${Math.min(limit,150)},qfq`;
   const data = await getJSON(url);
   const stockData = data && data.data && data.data[tcode];
   if(!stockData) throw new Error('tencent no data');
   const arr = stockData.qfqday || stockData.day;
+  const qt = stockData.qt && stockData.qt[tcode];
+  let latestTurnover = qt && qt[38] ? parseFloat(qt[38]) : null;
   if(!arr || !arr.length) throw new Error('tencent empty');
   return arr.map(row=>{
     const vol = +row[5];
     let amount = row[6] ? +row[6] : 0;
-    let avg = amount>0 ? amount/(vol*100) : +row[2];
+    let avg = (vol>0 && amount>0) ? amount/(vol*100) : +row[2];
     let turnover = 0;
     if(ltgb && ltgb>0){
-      if(ltgb>1000000) turnover = vol*100 / ltgb *100;
+      if(ltgbUnit==='gu' || ltgb>1000000) turnover = vol*100 / ltgb *100;
       else turnover = vol / ltgb;
+    }else if(latestTurnover!=null && row===arr[arr.length-1]){
+      turnover = latestTurnover;
+    }else{
+      turnover = vol>0 ? Math.min(10, Math.max(0.2, vol/10000)) : 0.5;
     }
+    if(!isFinite(turnover) || turnover<=0) turnover = 0.8;
+    if(turnover>20) turnover=20;
     return {
       date: row[0], open:+row[1], close:+row[2], high:+row[3], low:+row[4],
       vol: vol, amount: amount, turnover: turnover,
@@ -391,260 +339,6 @@ async function getFullHistory(secid, limit=480){
   });
 }
 
-// 本机本地日期（假设手机时区就是北京时间，交易时段内跟UTC不会跨日，直接用本地时间最简单可靠）
-function todayStrLocal(){
-  const d = new Date();
-  const p = n=>String(n).padStart(2,'0');
-  return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;
-}
-
-// 腾讯实时：e=vol(手) f=amount(元) => g=avg=amount/(vol*100)  e=vol f=ltgb => g=turnover=vol/ltgb
-async function getLiveQuoteBar(secid){
-  const tcode = secidToTencent(secid);
-  let ltgb = null;
-  try{
-    const capUrl = `https://web.ifzq.gtimg.cn/appstock/app/capital/query?code=${tcode}`;
-    const capData = await getJSON(capUrl);
-    const d = capData.data && capData.data[tcode];
-    if(d) ltgb = parseFloat(d.ltgb || d.ltsz || d.zgb || 0);
-  }catch(e){}
-  // 用 fqkline 的 qt 拿最新价、量、额、换手
-  const url = `https://web.ifzq.gtimg.cn/appstock/app/fqkline/get?param=${tcode},day,,,1,qfq`;
-  const data = await getJSON(url);
-  const stockData = data.data && data.data[tcode];
-  if(!stockData) throw new Error('tencent no live');
-  const qt = stockData.qt && stockData.qt[tcode];
-  let close=0, open=0, high=0, low=0, vol=0, amount=0, turnover=0;
-  if(qt){
-    // qt: [0..] 1 name, 2 code, 3 latest, 4 prev, 5 open, 6 vol(手), 33 high, 34 low, 37 amount, 38 turnover
-    close = +qt[3]; open = +qt[5]; high = +qt[33]; low = +qt[34]; vol = +qt[6]; amount = +qt[37]; turnover = +qt[38];
-  }else{
-    const arr = stockData.qfqday || stockData.day;
-    const row = arr[arr.length-1];
-    close = +row[2]; open = +row[1]; high = +row[3]; low = +row[4]; vol = +row[5];
-  }
-  // e+f=g 精确算
-  if(ltgb && turnover===0){
-    if(ltgb>1000000) turnover = vol*100 / ltgb *100;
-    else turnover = vol / ltgb;
-  }
-  let avg = vol>0 && amount>0 ? amount/(vol*100) : close;
-  return {
-    date: todayStrLocal(),
-    open: open, close: close, high: high, low: low,
-    vol: vol, amount: amount, turnover: turnover,
-    avg: avg
-  };
-}
-
-const histCache = {}; // secid -> 已收盘的历史（不含今天），减少重复抓取
-
-async function getHistBars(secid, limit){
-  if(histCache[secid] && histCache[secid].length >= Math.min(limit, 2000)) return histCache[secid];
-  const bars = await getFullHistory(secid, limit);
-  histCache[secid] = bars;
-  return bars;
-}
-
-
-function isValidLiveBar(liveBar, prevBar){
-  const vals = [liveBar.open, liveBar.high, liveBar.low, liveBar.close];
-  if(vals.some(v => !isFinite(v) || v<=0)) return false; // 有非法数值，会把图表坐标轴拉爆
-  if(prevBar && liveBar.open===prevBar.open && liveBar.high===prevBar.high &&
-     liveBar.low===prevBar.low && liveBar.close===prevBar.close) return false; // 跟昨天一模一样，是冻结的旧数据被错标成"今天"
-  return true;
-}
-
-async function buildStockEntry(secid, limit){
-  const histBars = await getHistBars(secid, limit);
-  let bars = histBars;
-  const today = todayStrLocal();
-  let liveOverlay = false;
-  if(!bars.length || bars[bars.length-1].date !== today){
-    try{
-      const liveBar = await getLiveQuoteBar(secid);
-      const prevBar = bars.length ? bars[bars.length-1] : null;
-      if(liveBar.date === today && isValidLiveBar(liveBar, prevBar)){
-        bars = bars.concat([liveBar]);
-        liveOverlay = true;
-      }
-    }catch(e){
-      // 拿不到实时行情（比如停牌），就只用已收盘的历史，不强求
-    }
-  }
-  const { cost50, cost75, cost90, zq1, zq } = computeIndicatorSeries(bars);
-  return { bars, cost50, cost75, cost90, zq1, zq, liveOverlay };
-}
-
-// 全市场代码+名称清单（每日采集脚本写的），选股/回测现在用这个，不再局限于自选股
-let fullMarketListCache = null;
-async function getFullMarketList(){
-  if(TENCENT_ONLY){
-    if(fullMarketListCache) return fullMarketListCache;
-    fullMarketListCache = TEST_CODES.map(c=>{ const secid=codeToSecid(c); return {code:secid, name:c, short:c, type:'stock'}; });
-    return fullMarketListCache;
-  }
-  if(fullMarketListCache) return fullMarketListCache;
-  const url = `https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/codes.json`;
-  const res = await fetch(url, {cache:'no-store'});
-  if(!res.ok) throw new Error('拿不到全市场股票清单，可能还没跑过采集');
-  const list = await res.json();
-  fullMarketListCache = list.map(x=>({
-    code: codeToSecid(x.code), name: x.name || x.code, short: x.code, type:'stock'
-  })).filter(x=>x.code);
-  return fullMarketListCache;
-}
-
-// 并发跑一批异步任务，限制同时进行的数量，避免几千个请求一次性打出去
-let scanCancelled = false;
-async function poolRun(items, worker, concurrency, onProgress){
-  const results = new Array(items.length);
-  let i = 0, done = 0;
-  async function run(){
-    while(i < items.length && !scanCancelled){
-      const idx = i++;
-      try{ results[idx] = await worker(items[idx]); }
-      catch(e){ results[idx] = null; }
-      done++;
-      if(onProgress && done % 20 === 0) onProgress(done, items.length);
-    }
-  }
-  await Promise.all(Array.from({length:concurrency}, run));
-  if(onProgress) onProgress(done, items.length);
-  return results;
-}
-
-// 从接口返回的原始时间字符串里稳妥地抠出"HH:MM"，不依赖具体是几位日期前缀
-// （之前写死 slice(11) 是猜的格式，猜错了整根分时线的横坐标就全错）
-function extractHHMM(raw){
-  const m = raw.match(/(\d{1,2}):(\d{2})/);
-  if(!m) return null;
-  return `${m[1].padStart(2,'0')}:${m[2]}`;
-}
-
-async function getIntraday(secid){
-  // 腾讯分时：e=price f=vol => g=amount，精确算分时均价
-  const tcode = secidToTencent(secid);
-  const url = `https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${tcode}`;
-  const data = await getJSON(url);
-  const stockData = data.data && data.data[tcode];
-  const rows = stockData && stockData.data && stockData.data.data;
-  if(!rows || !rows.length) throw new Error('tencent no minute');
-  return rows.map(line=>{
-    const parts = line.trim().split(/\s+/);
-    const hhmm = parts[0];
-    return { time: hhmm.slice(0,2)+':'+hhmm.slice(2), price:+parts[1] };
-  });
-}
-
-// 历史某一天的分时（1分钟K线）。用不复权价格（fqt=0）——分时看的是当天真实成交价，
-// 跟复权后的日K不是一回事，混用会导致跟涨跌停边界对不上。
-// 免费接口一般只保留最近一段时间的分钟数据，太久远的日期大概率会拿不到。
-async function getHistoricalIntraday(secid, dateStr){
-  const ymd = dateStr.replace(/-/g,'');
-  const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}`+
-    `&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f58`+
-    `&klt=1&fqt=1&beg=${ymd}&end=${ymd}&lmt=1000`;
-  const data = await getJSON(url);
-  if(!data || !data.data || !data.data.klines || !data.data.klines.length){
-    throw new Error('该日期没有分时数据（可能超出免费接口的保留范围）');
-  }
-  // 这个接口有个坑：请求的日期太久远、超出它的保留范围时，不会报错，
-  // 而是偷偷返回别的日期（通常是最近能拿到的）数据——必须验证返回的日期
-  // 真的等于我们请求的日期，不然会出现"看着有数据，其实是别的日子"的情况
-  const firstRowDate = data.data.klines[0].split(',')[0].slice(0,10);
-  if(firstRowDate !== dateStr){
-    throw new Error(`该日期没有分时数据（接口返回的是${firstRowDate}的数据，超出保留范围）`);
-  }
-  return data.data.klines.map(row=>{
-    const f = row.split(',');
-    return { time:extractHHMM(f[0]), price:+f[2] };
-  }).filter(t=>t.time);
-}
-
-// 不复权的前一交易日收盘价——涨跌停边界必须按真实价格算，不能用复权后的日K收盘价
-async function getPrevCloseUnadjusted(secid, dateStr){
-  const ymd = dateStr.replace(/-/g,'');
-  const url = `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}`+
-    `&fields1=f1,f2,f3,f4,f5&fields2=f51,f52,f53,f54,f55,f56,f57,f58`+
-    `&klt=101&fqt=0&end=${ymd}&lmt=5`;
-  const data = await getJSON(url);
-  if(!data || !data.data || !data.data.klines){
-    throw new Error('拿不到前收盘价');
-  }
-  const rows = data.data.klines.map(r=>r.split(','));
-  const idx = rows.findIndex(r=>r[0]===dateStr || r[0]===ymd);
-  if(idx>0) return +rows[idx-1][2];
-  if(rows.length>=2) return +rows[rows.length-2][2]; // 精确匹配不到，保守退化处理
-  throw new Error('拿不到前收盘价');
-}
-
-/* ==========================================================================
-   筹码分布引擎（COST / WINNER 的近似复刻）
-   原理：把每天的成交量，按当天换手率做"旧筹码衰减 + 新筹码按三角分布叠加"，
-   逐日滚动累积成一张"价格 -> 持仓权重"的分布图。
-   COST(N)  = 该分布中第 N% 分位对应的价格
-   WINNER(P)= 分布中价格低于 P 的部分占总权重的比例（即"成本低于当前价"的筹码占比）
-   说明：这是社区通用的近似算法，不是通达信内部实现，数值上会接近但不保证逐位一致。
-   ========================================================================== */
-class ChipModel{
-  constructor(minPrice, maxPrice, buckets=300){
-    this.min = minPrice; this.max = maxPrice;
-    this.n = buckets;
-    this.step = (maxPrice-minPrice)/buckets || 1;
-    this.w = new Float64Array(buckets);
-  }
-  priceAt(i){ return this.min + (i+0.5)*this.step; }
-  idxOf(p){ const i=Math.floor((p-this.min)/this.step); return isFinite(i) ? Math.min(this.n-1, Math.max(0, i)) : 0; }
-
-  addDay(low, high, avg, turnoverPct){
-    const turnover = Math.max(0, Math.min(1, turnoverPct/100));
-    if(turnover<=0) return;
-    // 1) 旧筹码按今日换手率衰减（部分旧筹码被换手换走）
-    const decay = 1 - turnover;
-    for(let i=0;i<this.n;i++) this.w[i] *= decay;
-
-    // 2) 今日新筹码按三角分布叠加在 [low, high] 区间，峰值在 avg
-    if(high<=low){
-      this.w[this.idxOf(avg)] += turnover;
-      return;
-    }
-    const i0 = this.idxOf(low), i1 = this.idxOf(high);
-    let raw = [];
-    let sum = 0;
-    for(let i=i0;i<=i1;i++){
-      const p = this.priceAt(i);
-      let wt;
-      if(p<=avg) wt = (avg>low) ? (p-low)/(avg-low) : 1;
-      else       wt = (high>avg) ? (high-p)/(high-avg) : 1;
-      wt = Math.max(0, wt);
-      raw.push(wt); sum += wt;
-    }
-    if(sum<=0){ this.w[this.idxOf(avg)] += turnover; return; }
-    for(let i=i0;i<=i1;i++) this.w[i] += turnover * raw[i-i0] / sum;
-  }
-
-  percentile(pct){
-    const total = this.w.reduce((a,b)=>a+b,0);
-    if(total<=0) return null;
-    const target = total * pct/100;
-    let acc = 0;
-    for(let i=0;i<this.n;i++){
-      acc += this.w[i];
-      if(acc>=target) return this.priceAt(i);
-    }
-    return this.priceAt(this.n-1);
-  }
-
-  winnerBelow(price){
-    const total = this.w.reduce((a,b)=>a+b,0);
-    if(total<=0) return null;
-    const idx = this.idxOf(price);
-    let acc = 0;
-    for(let i=0;i<=idx;i++) acc += this.w[i];
-    return acc/total*100;
-  }
-}
 
 // 对一段历史逐日滚动，产出 COST50/75/90 和 ZQ1/ZQ 的时间序列（跟 bars 一一对应）
 function computeIndicatorSeries(bars){
