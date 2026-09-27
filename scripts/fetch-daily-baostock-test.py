@@ -114,19 +114,42 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 IND_DIR = pathlib.Path("data/indicators")
 IND_DIR.mkdir(parents=True, exist_ok=True)
 META_FILE = pathlib.Path("data/meta.json")
+STOCK_LIST_FILE = pathlib.Path("data/stock_list.json")
+CHECKPOINT_FILE = pathlib.Path("data/checkpoint.json")
+INDICES_DIR = pathlib.Path("data/indices")
+INDICES_DIR.mkdir(parents=True, exist_ok=True)
 
-TEST_CODES = ['300642','300740','002579','002584','003001','301086','600880','002708','600127','600088','688175','301390','603248','688004']
-TEST_MODE = True
 MAX_DAYS_KEPT = 150
-DEEP_SEED_DAYS = 90
+DEEP_SEED_DAYS = 150
 TOPUP_DAYS = 10
 TIME_BUDGET_SECONDS = 12*60
+BATCH_SIZE = 500
 
 def bs_code(code):
     if code.startswith('6') or code.startswith('5') or code.startswith('9') or code.startswith('688'):
         return "sh."+code
     else:
         return "sz."+code
+
+def get_all_a_codes():
+    # 从baostock拉全A
+    rs = bs.query_all_stock(day=datetime.date.today().strftime("%Y-%m-%d"))
+    codes=[]
+    while (rs.error_code=='0') & rs.next():
+        row = rs.get_row_data()
+        # row[0] like sh.600000
+        code_full = row[0]
+        if '.' not in code_full:
+            continue
+        code = code_full.split('.')[1]
+        # 过滤：只留A股 6位数字开头
+        if len(code)!=6 or not code.isdigit():
+            continue
+        # 过滤ST? 保留，先不过滤
+        codes.append(code)
+    # 去重
+    codes = sorted(list(set(codes)))
+    return codes
 
 def fetch_bars(code, days):
     end = datetime.date.today().strftime("%Y-%m-%d")
@@ -152,17 +175,77 @@ def fetch_bars(code, days):
             continue
     return bars
 
+def fetch_index_bars(bs_code_str, days):
+    end = datetime.date.today().strftime("%Y-%m-%d")
+    start = (datetime.date.today() - timedelta(days=days)).strftime("%Y-%m-%d")
+    rs = bs.query_history_k_data_plus(bs_code_str,
+        "date,open,high,low,close,volume,amount",
+        start_date=start, end_date=end, frequency="d", adjustflag="2")
+    bars=[]
+    while (rs.error_code=='0') & rs.next():
+        r = rs.get_row_data()
+        try:
+            bars.append({
+                "date": r[0],
+                "open": float(r[1]),
+                "high": float(r[2]),
+                "low": float(r[3]),
+                "close": float(r[4]),
+                "vol": float(r[5])/100.0,
+                "amount": float(r[6]),
+                "turnover": 0.0
+            })
+        except:
+            continue
+    return bars
+
 def main():
     lg = bs.login()
     if lg.error_code!='0':
         print("baostock login fail", lg.error_msg)
         return
-    codes = TEST_CODES
-    print(f"Test warehouse codes: {len(codes)}")
+
+    # 读取checkpoint：已完成的代码
+    checkpoint = set()
+    if CHECKPOINT_FILE.exists():
+        try:
+            checkpoint = set(json.loads(CHECKPOINT_FILE.read_text()).get('done', []))
+            print(f"checkpoint loaded {len(checkpoint)} done")
+        except:
+            checkpoint = set()
+
+    # 全市场代码
+    all_codes = get_all_a_codes()
+    if not all_codes:
+        # 兜底用旧的14只，避免空跑
+        all_codes = ['300642','300740','002579','002584','003001','301086','600880','002708','600127','600088','688175','301390','603248','688004']
+    print(f"全市场 {len(all_codes)} 只")
+
+    # 保存 stock_list.json 供前端选股用
+    stock_list = []
+    for c in all_codes:
+        stock_list.append({"code": bs_code(c), "name": c, "short": c, "type": "stock"})
+    STOCK_LIST_FILE.write_text(json.dumps(stock_list, ensure_ascii=False), encoding='utf-8')
+
+    # 指数先抓 150天
+    for idx_code in ['sh.000001','sz.399001','sz.399006','sh.000688']:
+        try:
+            b = fetch_index_bars(idx_code, MAX_DAYS_KEPT)
+            if b:
+                cc = idx_code.split('.')[1]
+                p = INDICES_DIR / f"{cc}.json"
+                p.write_text(json.dumps(b, ensure_ascii=False), encoding='utf-8')
+                print(f"{idx_code} index {len(b)}")
+        except Exception as e:
+            print(f"index {idx_code} err {e}")
+
     start_ts = time.time()
-    for code in codes:
+    done_this_run = 0
+    for code in all_codes:
+        if code in checkpoint:
+            continue
         if time.time()-start_ts > TIME_BUDGET_SECONDS:
-            print("time budget hit, stop")
+            print("time budget hit, save checkpoint and exit")
             break
         path = DATA_DIR / f"{code}.json"
         existing = []
@@ -182,8 +265,9 @@ def main():
             by_date[b['date']] = b
         merged = [by_date[d] for d in sorted(by_date.keys())]
         merged = merged[-MAX_DAYS_KEPT:]
-        if len(merged) < 10:
-            print(f"{code} too short {len(merged)} skip")
+        if len(merged) < 1:
+            # 新股不满1天也跳过，但记录checkpoint避免重复
+            checkpoint.add(code)
             continue
         indicators, _ = compute_indicator_series(merged)
         enriched = []
@@ -209,16 +293,23 @@ def main():
             "latest": out["latest"],
             "lastDate": enriched[-1]['date'] if enriched else None
         }, ensure_ascii=False))
-        print(f"{code} ok {len(enriched)}")
+        checkpoint.add(code)
+        done_this_run += 1
+        print(f"{code} ok {len(enriched)} done {len(checkpoint)}/{len(all_codes)}")
+
+    # 保存checkpoint
+    CHECKPOINT_FILE.write_text(json.dumps({"done": sorted(list(checkpoint)), "updated": datetime.datetime.now().isoformat()}, ensure_ascii=False), encoding='utf-8')
+
     bs.logout()
     META_FILE.write_text(json.dumps({
         "lastUpdateDate": datetime.date.today().isoformat(),
-        "total": len(codes),
-        "updated": len(codes),
+        "total": len(all_codes),
+        "updated": len(checkpoint),
         "ranAt": datetime.datetime.now().isoformat(),
-        "note": "test-warehouse with precomputed cost/zq",
-        "testCodes": TEST_CODES
+        "note": f"全市场正式版 150天 cost/zq 500一批 断点续存 已完成{len(checkpoint)}/{len(all_codes)}",
+        "done": len(checkpoint)
     }, ensure_ascii=False))
+    print(f"run finished this run {done_this_run} total done {len(checkpoint)}")
 
 if __name__ == "__main__":
     main()
