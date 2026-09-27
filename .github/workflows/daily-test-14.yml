@@ -1,1 +1,29 @@
+name: daily-test-14
+on:
+  schedule:
+    - cron: '30 16 * * *'
+  workflow_dispatch:
 
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install baostock
+      - name: Run test 14 + indexes 150d
+        run: python scripts/fetch-daily-baostock-test.py
+      - name: Commit data
+        run: |
+          git config user.name "data-bot"
+          git config user.email "bot@test.com"
+          git add data/
+          git diff --cached --quiet || git commit -m "test 150d $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push
