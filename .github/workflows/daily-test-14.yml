@@ -18,12 +18,12 @@ jobs:
           python-version: '3.11'
       - name: Install deps
         run: pip install baostock
-      - name: Run test 14 + indexes 150d
+      - name: Run full market 150d 500 batch checkpoint
         run: python scripts/fetch-daily-baostock-test.py
       - name: Commit data
         run: |
           git config user.name "data-bot"
           git config user.email "bot@test.com"
           git add data/
-          git diff --cached --quiet || git commit -m "test 150d $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git diff --cached --quiet || git commit -m "full 150d $(date -u +%Y-%m-%dT%H:%M:%SZ) $(cat data/meta.json | head -c 100)"
           git push
