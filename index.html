@@ -21,6 +21,27 @@
 :where(code, pre, kbd, samp) {
   font-family: "Optimistic Mono", ui-monospace, monospace;
 }
+</style><style>
+@font-face {
+  font-family: "Optimistic";
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("/fonts/OptimisticAI_VF_Optimized.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Optimistic Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/OptimisticMono_W_TextRegular.woff2") format("woff2");
+}
+:where(html) {
+  font-family: "Optimistic", system-ui, sans-serif;
+}
+:where(code, pre, kbd, samp) {
+  font-family: "Optimistic Mono", ui-monospace, monospace;
+}
 </style>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
@@ -220,30 +241,54 @@ async function getHistBars(secid, limit){
 }
 async function getLiveQuoteFull(secid){
   try{
-    const isIndex=TEST_INDEXES.some(x=>x.code===secid);
     const url=`https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f19,f20,f18,f170`;
     const res=await fetch(url,{cache:'no-store'});
     if(!res.ok) throw new Error('east live http');
     const data=await res.json();
     const d=data?.data; if(!d||!d.f43) throw new Error('east live no data');
-    // 指数的昨收 f60 经常错，用 f19 或缓存
+    let price=d.f43/100, open=d.f46?d.f46/100:price, high=d.f44?d.f44/100:price, low=d.f45?d.f45/100:price;
+    let vol=d.f47?d.f47/100:0, amount=d.f48||0;
     let preClose=d.f60?d.f60/100:null;
-    if(isIndex){
-      // 指数用 f19 可能是昨收，或者用 f46? 这里先用 f60 但做合理性检查
-      if(preClose && Math.abs(preClose - d.f43/100)/ (d.f43/100) > 0.3){
-        preClose=null; // 异常，比如 24 vs 1560，丢弃
-      }
-    }
+    if(preClose && price>0 && Math.abs(preClose - price)/price > 0.3){ preClose=null; }
+    if(preClose!==null && preClose<=0) preClose=null;
     let pct=0;
-    if(d.f43&&preClose) pct=(d.f43-preClose)/preClose*100;
-    else if(d.f170) pct=d.f170/100; // 东财涨跌幅字段
-    return {
-      price:d.f43/100, open:d.f46/100, high:d.f44/100, low:d.f45/100, vol:d.f47, amount:d.f48,
-      preClose:preClose,
-      pct:pct
-    };
+    if(price && preClose) pct=(price-preClose)/preClose*100;
+    else if(d.f170!=null) pct=d.f170/100;
+    else if(d.f19!=null) pct=d.f19/100;
+    return { price, open, high, low, vol, amount, preClose, pct };
   }catch(e){ return null; }
 }
+function getUnifiedPreClose(live, bars){
+  if(!bars||!bars.length) return {realPreClose: live?.preClose||null, prevBar:null};
+  const today=todayStrLocal();
+  const lastA=bars[bars.length-1];
+  let prevBar=null;
+  if(lastA.date===today){ prevBar=bars.length>=2?bars[bars.length-2]:null; }
+  else{ prevBar=lastA; }
+  let realPreClose=live?.preClose||null;
+  if(!realPreClose && prevBar) realPreClose=prevBar.close;
+  if(live && realPreClose && live.price>0 && Math.abs(realPreClose-live.price)/live.price>0.3){
+    realPreClose=prevBar?prevBar.close:realPreClose;
+  }
+  return {realPreClose, prevBar};
+}
+function mergeAB(bars, live){
+  if(!bars||!bars.length) return [];
+  if(!live) return bars.slice();
+  const today=todayStrLocal();
+  const lastA=bars[bars.length-1];
+  const liveBarBase={date:today, open:live.open, close:live.price, high:live.high, low:live.low, vol:live.vol, amount:live.amount, _live:true};
+  if(lastA.date===today){
+    const mergedLast={...lastA, ...liveBarBase, high:Math.max(lastA.high, live.high), low:Math.min(lastA.low, live.low), close:live.price, _live:true};
+    mergedLast.cost50=lastA.cost50; mergedLast.cost75=lastA.cost75; mergedLast.cost90=lastA.cost90;
+    mergedLast.zq1=lastA.zq1; mergedLast.zq=lastA.zq; mergedLast.vwma10=lastA.vwma10;
+    const copy=bars.slice(); copy[copy.length-1]=mergedLast; return copy;
+  }else{
+    const bBar={...liveBarBase, cost50:lastA.cost50, cost75:lastA.cost75, cost90:lastA.cost90, zq1:lastA.zq1, zq:lastA.zq, vwma10:lastA.vwma10};
+    const copy=bars.slice(); copy.push(bBar); return copy;
+  }
+}
+
 async function getIntraday(secid){
   try{
     const url=`https://push2.eastmoney.com/api/qt/stock/trends2/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f52,f53,f54&iscr=0&iscca=0`;
@@ -338,7 +383,7 @@ function drawMiniK(canvas, bars){
   let minL=Math.min(...lows), maxH=Math.max(...highs);
   let range=maxH-minL||1; const pad=range*0.08; minL-=pad; maxH+=pad; range=maxH-minL;
   const y=v=>cssH-((v-minL)/range)*cssH;
-  const n=show.length; const rightPad=2; const plotW=cssW-rightPad;
+  const n=show.length; const rightPad=10; const plotW=cssW-rightPad;
   const x=i=> i/(n-1)*plotW;
   const bw=Math.max(1, plotW/n*0.55);
   show.forEach((b,i)=>{
@@ -348,6 +393,7 @@ function drawMiniK(canvas, bars){
     ctx.beginPath(); ctx.moveTo(xx,hY); ctx.lineTo(xx,lY); ctx.stroke();
     const bodyH=Math.max(1, Math.abs(cY-oY));
     ctx.fillRect(xx-bw/2, Math.min(oY,cY), bw, bodyH||1);
+    if(b._live){ ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.fillRect(xx-bw/2, y(b.high)-1, bw, 1.2); }
   });
 }
 
@@ -565,243 +611,43 @@ document.getElementById('detail-back').onclick=()=>{ document.getElementById('de
 async function loadDetail(){
   const item=detailState.item; if(!item) return;
   const metaEl=document.getElementById('detail-meta');
-  const priceEl=document.getElementById('detail-price');
   metaEl.textContent='加载中...';
   const isIndex=TEST_INDEXES.some(x=>x.code===item.code);
   try{
-    const bars=await getHistBars(item.code, 150);
+    const barsA=await getHistBars(item.code, 150);
     const liveFull=await getLiveQuoteFull(item.code);
     const trends=await getIntraday(item.code);
-    let merged=bars.slice();
-    let prevClose=bars.length>=1?bars[bars.length-1].close: (liveFull?liveFull.preClose:null);
-    if(liveFull && liveFull.preClose && Math.abs(liveFull.preClose - liveFull.price)/liveFull.price > 0.3){
-      // 指数昨收异常，丢弃，用上一根
-      liveFull.preClose=prevClose;
-    }
-    const today=todayStrLocal();
-    if(liveFull){
-      const isSameDay=merged.length && merged[merged.length-1].date===today;
-      const liveBar={date:today, open:liveFull.open, close:liveFull.price, high:liveFull.high, low:liveFull.low, vol:liveFull.vol, amount:liveFull.amount, cost50:merged[merged.length-1]?.cost50, cost75:merged[merged.length-1]?.cost75, cost90:merged[merged.length-1]?.cost90, zq1:merged[merged.length-1]?.zq1, zq:merged[merged.length-1]?.zq, _live:true};
-      if(isSameDay){ merged[merged.length-1]= {...merged[merged.length-1], ...liveBar}; }
-      else { merged.push(liveBar); }
-      if(merged.length>150) merged=merged.slice(-150);
-      prevClose=bars.length>=1?bars[bars.length-1].close: liveFull.preClose;
-    }
+    let merged = liveFull ? mergeAB(barsA, liveFull) : barsA.slice();
+    if(merged.length>150) merged=merged.slice(-150);
+    const {realPreClose, prevBar}=getUnifiedPreClose(liveFull, barsA);
     detailState.bars=merged;
     const last=merged[merged.length-1];
-    const prev=merged.length>=2?merged[merged.length-2]:null;
     let pct=0;
-    if(liveFull && liveFull.preClose) pct=(liveFull.price-liveFull.preClose)/liveFull.preClose*100;
-    else if(prev) pct=(last.close-prev.close)/prev.close*100;
-    else if(liveFull) pct=liveFull.pct;
-    metaEl.textContent=`${last.date}  ${last.open.toFixed(2)}/${last.high.toFixed(2)}/${last.low.toFixed(2)}/${last.close.toFixed(2)}  量${(last.vol||0).toFixed(0)}`;
-    priceEl.innerHTML=`<span>现价 <b class="${pct>=0?'up':'down'}">${(liveFull?liveFull.price:last.close).toFixed(2)}</b></span><span>涨跌 <b class="${pct>=0?'up':'down'}">${pct>=0?'+':''}${pct.toFixed(2)}%</b></span><span>昨收 ${prev?prev.close.toFixed(2):(liveFull?.preClose?liveFull.preClose.toFixed(2):'--')}</span>`;
-
-    const costEl=document.getElementById('detail-cost');
-    const zqEl=document.getElementById('detail-zq');
-    if(isIndex){
-      costEl.innerHTML=`<span style="color:var(--dim)">指数不显示cost/zq</span>`;
-      zqEl.innerHTML='';
-    } else {
-      costEl.innerHTML=`<span style="color:${COST_COLORS[50]}">cost50 <b style="color:${COST_COLORS[50]}">${last.cost50?last.cost50.toFixed(2):'--'}</b></span><span style="color:${COST_COLORS[75]}">cost75 <b style="color:${COST_COLORS[75]}">${last.cost75?last.cost75.toFixed(2):'--'}</b></span><span style="color:${COST_COLORS[90]}">cost90 <b style="color:${COST_COLORS[90]}">${last.cost90?last.cost90.toFixed(2):'--'}</b></span>`;
-      zqEl.innerHTML=`<span style="color:#4a90e2">zq1 <b style="color:#4a90e2">${last.zq1!=null?last.zq1.toFixed(1)+'%':'--'}</b></span><span style="color:#c46be0">zq <b style="color:#c46be0">${last.zq!=null?last.zq.toFixed(1)+'%':'--'}</b></span><span>昨收 ${prev?prev.close.toFixed(2):'--'}</span>`;
-    }
-
-    const costLines=isIndex?[]:[merged.map(b=>b.cost50), merged.map(b=>b.cost75), merged.map(b=>b.cost90)];
+    if(realPreClose && realPreClose>0) pct=(last.close-realPreClose)/realPreClose*100;
+    else if(merged.length>=2) pct=(last.close-merged[merged.length-2].close)/merged[merged.length-2].close*100;
+    metaEl.textContent=`${last.date} ${last._live?'·实时':''}  ${pct>=0?'+':''}${pct.toFixed(2)}%  prevClose=${realPreClose?realPreClose.toFixed(2):'--'}  ${isIndex?'指数不显示cost/zq':''}`;
+    detailState.realPreClose=realPreClose;
+    detailState.trends=trends;
+    detailState.live=liveFull;
+    const showK=merged.slice(-60);
+    const costLines=!isIndex?[showK.map(b=>b.cost50), showK.map(b=>b.cost75), showK.map(b=>b.cost90)]:null;
+    drawMain(document.getElementById('chart-main'), showK, costLines, null, isIndex);
+    drawZQ(document.getElementById('chart-zq'), showK);
+    drawVOL(document.getElementById('chart-vol'), showK);
     const closes=merged.map(b=>b.close);
-    const macd=calcMACD(closes);
-    const toShow=merged.slice(-60);
-    const sliceCost=costLines.map(l=>l.slice(-60));
-    drawMain(document.getElementById('chart-main'), toShow, sliceCost, detailState.cursorIdx, isIndex);
-    if(isIndex){
-      document.getElementById('chart-sub').style.display='none';
-    } else {
-      document.getElementById('chart-sub').style.display='block';
-      drawZQ(document.getElementById('chart-sub'), toShow.map(b=>b.zq1), toShow.map(b=>b.zq), detailState.cursorIdx);
+    const macd=calcMACD(closes.slice(-60));
+    drawMACD(document.getElementById('chart-macd'), macd, 60);
+    drawIntra(document.getElementById('chart-intra'), trends, realPreClose, item.code);
+    const priceTag=document.getElementById('detail-price');
+    if(priceTag){
+      priceTag.textContent=`${last.close.toFixed(2)} ${pct>=0?'+':''}${pct.toFixed(2)}%`;
+      priceTag.className=pct>0?'up':pct<0?'down':'flat';
     }
-    drawIntra(document.getElementById('chart-intra'), trends, prevClose|| (prev?prev.close: last.close), item.code);
-    drawVOL(document.getElementById('chart-vol'), toShow, detailState.cursorIdx);
-    drawMACD(document.getElementById('chart-macd'), macd.dif.slice(-60), macd.dea.slice(-60), macd.macd.slice(-60), detailState.cursorIdx);
-  }catch(e){ metaEl.textContent='加载失败 '+e.message; }
+  }catch(e){
+    metaEl.textContent='加载失败 '+e.message;
+  }
 }
-document.getElementById('chart-main').onclick=(e)=>{
-  const canvas=e.target; const rect=canvas.getBoundingClientRect(); const x=e.clientX-rect.left;
-  const n=detailState.bars.slice(-60).length; const idx=Math.round(x/(canvas.clientWidth-10)*(n-1));
-  if(detailState.cursorIdx===idx){ detailState.cursorIdx=null; }
-  else { detailState.cursorIdx=idx; }
-  loadDetail();
-};
 
-// ---- 选股 ----
-let condId=0;
-const condTypes=[
-  {k:'close_above_cost50', label:'收盘>cost50'},
-  {k:'close_above_cost75', label:'收盘>cost75'},
-  {k:'zq_gt', label:'zq >', hasVal:true},
-  {k:'zq1_gt', label:'zq1 >', hasVal:true},
-  {k:'pct_gt', label:'涨幅 >%', hasVal:true},
-];
-function addCondRow(){
-  const wrap=document.getElementById('cond-builder');
-  const id=condId++;
-  const row=document.createElement('div'); row.className='cond-row';
-  row.innerHTML=`<select id="cond-type-${id}">${condTypes.map(t=>`<option value="${t.k}">${t.label}</option>`).join('')}</select><input id="cond-val-${id}" type="number" placeholder="值" style="width:70px;display:none;"><div class="btn ghost" style="padding:2px 8px;">删</div>`;
-  const sel=row.querySelector('select'); const inp=row.querySelector('input'); const del=row.querySelector('.btn');
-  sel.onchange=()=>{ const tp=condTypes.find(t=>t.k===sel.value); inp.style.display=tp.hasVal?'':'none'; };
-  del.onclick=()=>row.remove();
-  wrap.appendChild(row);
-}
-for(let i=0;i<2;i++) addCondRow();
-function readConditionSettings(){
-  const rows=document.querySelectorAll('#cond-builder .cond-row');
-  const conds=[];
-  rows.forEach(r=>{
-    const sel=r.querySelector('select'); const inp=r.querySelector('input');
-    if(!sel) return;
-    conds.push({k:sel.value, v: inp.value?parseFloat(inp.value):null});
-  });
-  return conds;
-}
-function hasAnyActiveFilter(s){ return s&&s.length>0; }
-function evalSelectionAt(entry, settings, idx){
-  const b=entry.bars[idx];
-  for(const c of settings){
-    if(c.k==='close_above_cost50' && !(b.close>b.cost50)) return false;
-    if(c.k==='close_above_cost75' && !(b.close>b.cost75)) return false;
-    if(c.k==='zq_gt' && !(b.zq>c.v)) return false;
-    if(c.k==='zq1_gt' && !(b.zq1>c.v)) return false;
-    if(c.k==='pct_gt'){
-      const prev=entry.bars[idx-1]; if(!prev) return false;
-      const pct=(b.close-prev.close)/prev.close*100; if(!(pct>c.v)) return false;
-    }
-  }
-  return true;
-}
-function scanDateRange(entry, settings, fromDate, toDate){
-  const hits=[];
-  entry.bars.forEach((b,i)=>{
-    if(fromDate && b.date<fromDate) return;
-    if(toDate && b.date>toDate) return;
-    if(evalSelectionAt(entry, settings, i)) hits.push(b.date);
-  });
-  return hits;
-}
-function backtestEntry(entry, settings, fromDate, toDate){
-  const trades=[];
-  for(let i=0;i<entry.bars.length-1;i++){
-    const b=entry.bars[i];
-    if(fromDate && b.date<fromDate) continue;
-    if(toDate && b.date>toDate) continue;
-    if(evalSelectionAt(entry, settings, i)){
-      const buy=b.close; const sell=entry.bars[i+1].close; const ret=(sell-buy)/buy*100;
-      trades.push({date:b.date, ret});
-    }
-  }
-  return trades;
-}
-function estimateNeededBars(fromDate){
-  if(!fromDate) return 150;
-  const diff=(new Date()-new Date(fromDate))/86400000;
-  return Math.min(150, Math.ceil(diff)+20);
-}
-async function poolRun(items, fn, concurrency=20, onProgress){
-  let idx=0, done=0;
-  const run=async()=>{
-    while(idx<items.length){
-      const cur=idx++; const it=items[cur];
-      try{ await fn(it); }catch(e){}
-      done++; if(onProgress) onProgress(done, items.length);
-    }
-  };
-  await Promise.all(Array.from({length:concurrency},run)); if(onProgress) onProgress(done,items.length);
-}
-async function getFullMarketList(){
-  try{
-    const urls=[
-      `./data/stock_list.json?t=${Date.now()}`,
-      `https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/stock_list.json?t=${Date.now()}`,
-      `https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/stock_list.json?t=${Date.now()}`
-    ];
-    const j = await fetchJsonWithFallback(urls, 4000);
-    if(Array.isArray(j) && j.length>100) return j;
-  }catch(e){}
-  return TEST_CODES.map(c=>{ const secid=codeToSecid(c); return {code:secid,name:c,short:c,type:'stock'}; });
-}
-let scanCancelled=false;
-document.getElementById('run-sel-btn').onclick=async()=>{
-  const settings=readConditionSettings();
-  const fromDate=document.getElementById('sel-date-from').value||null;
-  const toDate=document.getElementById('sel-date-to').value||null;
-  const resultsEl=document.getElementById('sel-results');
-  const progEl=document.getElementById('sel-progress');
-  if(!hasAnyActiveFilter(settings)){ progEl.textContent='至少设置一个条件'; return; }
-  resultsEl.innerHTML=''; progEl.textContent='读取清单...';
-  let list=await getFullMarketList();
-  scanCancelled=false; document.getElementById('stop-scan-btn').style.display='block';
-  progEl.textContent=`正在扫描 0/${list.length}...`;
-  const needed=estimateNeededBars(fromDate);
-  let matchRows=[]; const MAX_ROWS=300;
-  await poolRun(list, async (item)=>{
-    if(scanCancelled) return;
-    try{
-      const bars=await getHistBars(item.code, needed);
-      const entry={bars,cost50:bars.map(b=>b.cost50),cost75:bars.map(b=>b.cost75),cost90:bars.map(b=>b.cost90),zq1:bars.map(b=>b.zq1),zq:bars.map(b=>b.zq)};
-      let dates=null;
-      if(fromDate||toDate){ const hits=scanDateRange(entry, settings, fromDate, toDate); if(hits.length) dates=hits; }
-      else{ if(evalSelectionAt(entry, settings, entry.bars.length-1)) dates=[entry.bars[entry.bars.length-1].date]; }
-      if(dates){
-        const last=entry.bars[entry.bars.length-1]; const prev=entry.bars.length>=2?entry.bars[entry.bars.length-2]:null; const pct=prev?(last.close-prev.close)/prev.close*100:0;
-        matchRows.push({item,dates,pct,entry});
-        matchRows.sort((a,b)=>b.pct-a.pct);
-        resultsEl.innerHTML='';
-        matchRows.slice(0,MAX_ROWS).forEach(({item,dates,pct,entry})=>{
-          const div=document.createElement('div'); div.className='res-card';
-          div.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;">
-            <div><b>${item.name}</b> ${item.short} <span class="${pct>0?'up':pct<0?'down':'flat'}" style="margin-left:6px;">${pct>=0?'+':''}${pct.toFixed(2)}%</span> <span style="color:var(--dim);font-size:10px;">命中:${dates.join(',')}</span></div>
-            <div class="btn ghost" style="padding:4px 10px;">+自选</div>
-          </div>
-          <div style="display:flex;gap:8px;margin-top:6px;">
-            <canvas class="chart" style="height:90px;flex:1;"></canvas>
-            <canvas class="chart small" style="height:90px;flex:0.6;"></canvas>
-          </div>`;
-          const canvases=div.querySelectorAll('canvas');
-          drawMain(canvases[0], entry.bars.slice(-60), [entry.cost50.slice(-60),entry.cost75.slice(-60),entry.cost90.slice(-60)], null, false);
-          drawZQ(canvases[1], entry.zq1.slice(-60), entry.zq.slice(-60));
-          div.querySelector('.btn').onclick=()=>{
-            const store=loadWLStore(); const cat=store.active; if(!store.cats[cat].some(x=>x.code===item.code)){ store.cats[cat].unshift({code:item.code,name:item.name,short:item.short,type:'stock'}); saveWLStore(store); renderCatBar(); renderWatchlist(); }
-          };
-          div.onclick=(e)=>{ if(e.target.classList.contains('btn')) return; openDetail(item); };
-          resultsEl.appendChild(div);
-        });
-      }
-    }catch(e){}
-  }, 20, (done,total)=>{ progEl.textContent=`正在扫描 ${done}/${total}... 已找到${matchRows.length}只`; });
-  document.getElementById('stop-scan-btn').style.display='none';
-  if(matchRows.length===0) resultsEl.innerHTML='<div class="hint">没有符合条件的</div>';
-};
-document.getElementById('stop-scan-btn').onclick=()=>{ scanCancelled=true; document.getElementById('stop-scan-btn').style.display='none'; };
-document.getElementById('run-backtest-btn').onclick=async()=>{
-  const settings=readConditionSettings();
-  const fromDate=document.getElementById('sel-date-from').value||null;
-  const toDate=document.getElementById('sel-date-to').value||null;
-  const resultsEl=document.getElementById('backtest-results');
-  if(!hasAnyActiveFilter(settings)){ resultsEl.innerHTML='<div class="hint">至少设置一个条件</div>'; return; }
-  resultsEl.innerHTML='<div class="hint">回测中...</div>';
-  let list=await getFullMarketList();
-  const needed=fromDate?estimateNeededBars(fromDate):150;
-  let allTrades=[]; let perStock=[];
-  await poolRun(list, async (item)=>{
-    try{
-      const bars=await getHistBars(item.code, needed);
-      const entry={bars, cost50:bars.map(b=>b.cost50), cost75:bars.map(b=>b.cost75), cost90:bars.map(b=>b.cost90), zq1:bars.map(b=>b.zq1), zq:bars.map(b=>b.zq)};
-      const trades=backtestEntry(entry, settings, fromDate, toDate);
-      if(trades.length){ perStock.push({item,trades}); allTrades=allTrades.concat(trades); }
-    }catch(e){}
-  }, 20);
-  if(!allTrades.length){ resultsEl.innerHTML='<div class="hint">没有触发</div>'; return; }
-  const win=allTrades.filter(t=>t.ret>0).length; const avg=allTrades.reduce((s,t)=>s+t.ret,0)/allTrades.length;
-  resultsEl.innerHTML=`<div class="card"><b>回测汇总</b> 共${allTrades.length}次 涉及${perStock.length}只 胜率${(win/allTrades.length*100).toFixed(1)}% 平均${avg>=0?'+':''}${avg.toFixed(2)}% （默认尾盘买次日收盘卖）</div>`;
-};
 async function checkDataStatus(){
   const el=document.getElementById('data-status-text');
   el.textContent='正式版 全市场 150天 同域+jsDelivr加速 01:00起每45分钟';
@@ -825,5 +671,5 @@ renderIndexList();
 renderWatchlist();
 checkDataStatus();
 </script>
-<script>(function(){var loc=location.href.replace(/#.*$/,"");var ATTR_NAMES=["data-product-id","data-productid","data-product_id","product-id","productid","product_id","data-source-entity-id","source-entity-id","source_entity_id","data-product","data-metadata","data-meta"];var DATASET_KEYS=["productId","productid","product_id","sourceEntityId","sourceentityid","source_entity_id","product","metadata","meta"];function readProductId(value){if(typeof value!=="string"||value.length===0)return null;if(/^[0-9]{6,}$/.test(value))return value;var match=value.match(/(?:product(?:_|-)?id|source(?:_|-)?entity(?:_|-)?id)["'=:\s]+([0-9]{6,})/i);return match?match[1]:null}function extractProductId(start){for(var node=start;node&&node!==document.body;node=node.parentElement){for(var i=0;i<ATTR_NAMES.length;i++){var attrValue=node.getAttribute&&node.getAttribute(ATTR_NAMES[i]);var attrProductId=readProductId(attrValue);if(attrProductId)return attrProductId}var dataset=node.dataset||null;if(dataset){for(var j=0;j<DATASET_KEYS.length;j++){var dataValue=dataset[DATASET_KEYS[j]];var dataProductId=readProductId(dataValue);if(dataProductId)return dataProductId}}}return null}function isInlineMediaSlotElement(node){return !!(node&&node.getAttribute&&node.getAttribute("data-clippy-inline-media-slot")!==null)}function findInlineMediaSlot(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(isInlineMediaSlotElement(node))return node}return null}function readInlineMediaUrl(node){if(!node)return null;return node.getAttribute&&((node.getAttribute("data-clippy-inline-media-url")||node.getAttribute("data-url")||node.getAttribute("data_url")))||node.href||null}function stripHash(url){return String(url).replace(/#.*$/,"")}function urlsMatch(a,b){if(!a||!b)return false;try{return stripHash(new URL(a,loc).href)===stripHash(new URL(b,loc).href)}catch(_){return stripHash(a)===stripHash(b)}}function isFirstPartyReelUrl(value){try{var url=new URL(value,loc);if(url.protocol!=="https:")return false;var host=url.hostname.toLowerCase();var supported=host==="instagram.com"||host.endsWith(".instagram.com")||host==="facebook.com"||host.endsWith(".facebook.com");return supported&&/\/reels?\//i.test(url.pathname)}catch(_){return false}}function isInlineMediaUrlClick(node,href){var slot=findInlineMediaSlot(node);if(!slot)return false;var slotUrl=readInlineMediaUrl(slot);if(slotUrl)return urlsMatch(href,slotUrl);return isFirstPartyReelUrl(href)}function findDataHref(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(node.getAttribute){var href=node.getAttribute("data-href")||node.getAttribute("data-url");if(href)return{href:href,node:node}}}return null}var nativeOpen=window.open;window.open=function(url){if(parent!==window&&typeof url==="string"&&/^https?:\/\//.test(url)){parent.postMessage({type:"ecto:usercontent-link-click",href:url},"*");return null}return nativeOpen?nativeOpen.apply(window,arguments):null};document.addEventListener("click",function(e){var target=e.target instanceof Element?e.target:null;if(!target)return;if(parent===window)return;var a=target.closest?target.closest("a[href]"):null;if(a&&a.href&&/^https?:\/\//.test(a.href)&&a.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(a,a.href))return;var productId=extractProductId(target)||extractProductId(a);if(productId){e.preventDefault();parent.postMessage({type:"ecto-artifact-link-click",productId:productId},"*");return}e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:a.href},"*");return}var dataHref=findDataHref(target);if(dataHref&&/^https?:\/\//.test(dataHref.href)&&dataHref.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(dataHref.node,dataHref.href))return;e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:dataHref.href},"*")}},true)})();</script><script>(function(){var FOCUS_TYPE="ecto:artifact-focus-request";var CLOSE_TYPE="ecto:artifact-close-request";function focusArtifactDocument(){var body=document.body;if(!body)return;try{window.focus();}catch(e){}if(!body.hasAttribute("tabindex"))body.setAttribute("tabindex","-1");try{body.focus({preventScroll:true});}catch(e){try{body.focus();}catch(e2){}}}window.addEventListener("message",function(event){if(event.source!==window.parent)return;var data=event.data;if(!data||typeof data!=="object"||data.type!==FOCUS_TYPE)return;if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",focusArtifactDocument,{once:true});return;}focusArtifactDocument();});window.addEventListener("keydown",function(event){if(event.key!=="Escape")return;window.setTimeout(function(){if(event.defaultPrevented)return;window.parent.postMessage({type:CLOSE_TYPE},"*");},0);});})();</script></body>
+<script>(function(){var loc=location.href.replace(/#.*$/,"");var ATTR_NAMES=["data-product-id","data-productid","data-product_id","product-id","productid","product_id","data-source-entity-id","source-entity-id","source_entity_id","data-product","data-metadata","data-meta"];var DATASET_KEYS=["productId","productid","product_id","sourceEntityId","sourceentityid","source_entity_id","product","metadata","meta"];function readProductId(value){if(typeof value!=="string"||value.length===0)return null;if(/^[0-9]{6,}$/.test(value))return value;var match=value.match(/(?:product(?:_|-)?id|source(?:_|-)?entity(?:_|-)?id)["'=:\s]+([0-9]{6,})/i);return match?match[1]:null}function extractProductId(start){for(var node=start;node&&node!==document.body;node=node.parentElement){for(var i=0;i<ATTR_NAMES.length;i++){var attrValue=node.getAttribute&&node.getAttribute(ATTR_NAMES[i]);var attrProductId=readProductId(attrValue);if(attrProductId)return attrProductId}var dataset=node.dataset||null;if(dataset){for(var j=0;j<DATASET_KEYS.length;j++){var dataValue=dataset[DATASET_KEYS[j]];var dataProductId=readProductId(dataValue);if(dataProductId)return dataProductId}}}return null}function isInlineMediaSlotElement(node){return !!(node&&node.getAttribute&&node.getAttribute("data-clippy-inline-media-slot")!==null)}function findInlineMediaSlot(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(isInlineMediaSlotElement(node))return node}return null}function readInlineMediaUrl(node){if(!node)return null;return node.getAttribute&&((node.getAttribute("data-clippy-inline-media-url")||node.getAttribute("data-url")||node.getAttribute("data_url")))||node.href||null}function stripHash(url){return String(url).replace(/#.*$/,"")}function urlsMatch(a,b){if(!a||!b)return false;try{return stripHash(new URL(a,loc).href)===stripHash(new URL(b,loc).href)}catch(_){return stripHash(a)===stripHash(b)}}function isFirstPartyReelUrl(value){try{var url=new URL(value,loc);if(url.protocol!=="https:")return false;var host=url.hostname.toLowerCase();var supported=host==="instagram.com"||host.endsWith(".instagram.com")||host==="facebook.com"||host.endsWith(".facebook.com");return supported&&/\/reels?\//i.test(url.pathname)}catch(_){return false}}function isInlineMediaUrlClick(node,href){var slot=findInlineMediaSlot(node);if(!slot)return false;var slotUrl=readInlineMediaUrl(slot);if(slotUrl)return urlsMatch(href,slotUrl);return isFirstPartyReelUrl(href)}function findDataHref(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(node.getAttribute){var href=node.getAttribute("data-href")||node.getAttribute("data-url");if(href)return{href:href,node:node}}}return null}var nativeOpen=window.open;window.open=function(url){if(parent!==window&&typeof url==="string"&&/^https?:\/\//.test(url)){parent.postMessage({type:"ecto:usercontent-link-click",href:url},"*");return null}return nativeOpen?nativeOpen.apply(window,arguments):null};document.addEventListener("click",function(e){var target=e.target instanceof Element?e.target:null;if(!target)return;if(parent===window)return;var a=target.closest?target.closest("a[href]"):null;if(a&&a.href&&/^https?:\/\//.test(a.href)&&a.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(a,a.href))return;var productId=extractProductId(target)||extractProductId(a);if(productId){e.preventDefault();parent.postMessage({type:"ecto-artifact-link-click",productId:productId},"*");return}e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:a.href},"*");return}var dataHref=findDataHref(target);if(dataHref&&/^https?:\/\//.test(dataHref.href)&&dataHref.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(dataHref.node,dataHref.href))return;e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:dataHref.href},"*")}},true)})();</script><script>(function(){var FOCUS_TYPE="ecto:artifact-focus-request";var CLOSE_TYPE="ecto:artifact-close-request";function focusArtifactDocument(){var body=document.body;if(!body)return;try{window.focus();}catch(e){}if(!body.hasAttribute("tabindex"))body.setAttribute("tabindex","-1");try{body.focus({preventScroll:true});}catch(e){try{body.focus();}catch(e2){}}}window.addEventListener("message",function(event){if(event.source!==window.parent)return;var data=event.data;if(!data||typeof data!=="object"||data.type!==FOCUS_TYPE)return;if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",focusArtifactDocument,{once:true});return;}focusArtifactDocument();});window.addEventListener("keydown",function(event){if(event.key!=="Escape")return;window.setTimeout(function(){if(event.defaultPrevented)return;window.parent.postMessage({type:CLOSE_TYPE},"*");},0);});})();</script><script>(function(){var loc=location.href.replace(/#.*$/,"");var ATTR_NAMES=["data-product-id","data-productid","data-product_id","product-id","productid","product_id","data-source-entity-id","source-entity-id","source_entity_id","data-product","data-metadata","data-meta"];var DATASET_KEYS=["productId","productid","product_id","sourceEntityId","sourceentityid","source_entity_id","product","metadata","meta"];function readProductId(value){if(typeof value!=="string"||value.length===0)return null;if(/^[0-9]{6,}$/.test(value))return value;var match=value.match(/(?:product(?:_|-)?id|source(?:_|-)?entity(?:_|-)?id)["'=:\s]+([0-9]{6,})/i);return match?match[1]:null}function extractProductId(start){for(var node=start;node&&node!==document.body;node=node.parentElement){for(var i=0;i<ATTR_NAMES.length;i++){var attrValue=node.getAttribute&&node.getAttribute(ATTR_NAMES[i]);var attrProductId=readProductId(attrValue);if(attrProductId)return attrProductId}var dataset=node.dataset||null;if(dataset){for(var j=0;j<DATASET_KEYS.length;j++){var dataValue=dataset[DATASET_KEYS[j]];var dataProductId=readProductId(dataValue);if(dataProductId)return dataProductId}}}return null}function isInlineMediaSlotElement(node){return !!(node&&node.getAttribute&&node.getAttribute("data-clippy-inline-media-slot")!==null)}function findInlineMediaSlot(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(isInlineMediaSlotElement(node))return node}return null}function readInlineMediaUrl(node){if(!node)return null;return node.getAttribute&&((node.getAttribute("data-clippy-inline-media-url")||node.getAttribute("data-url")||node.getAttribute("data_url")))||node.href||null}function stripHash(url){return String(url).replace(/#.*$/,"")}function urlsMatch(a,b){if(!a||!b)return false;try{return stripHash(new URL(a,loc).href)===stripHash(new URL(b,loc).href)}catch(_){return stripHash(a)===stripHash(b)}}function isFirstPartyReelUrl(value){try{var url=new URL(value,loc);if(url.protocol!=="https:")return false;var host=url.hostname.toLowerCase();var supported=host==="instagram.com"||host.endsWith(".instagram.com")||host==="facebook.com"||host.endsWith(".facebook.com");return supported&&/\/reels?\//i.test(url.pathname)}catch(_){return false}}function isInlineMediaUrlClick(node,href){var slot=findInlineMediaSlot(node);if(!slot)return false;var slotUrl=readInlineMediaUrl(slot);if(slotUrl)return urlsMatch(href,slotUrl);return isFirstPartyReelUrl(href)}function findDataHref(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(node.getAttribute){var href=node.getAttribute("data-href")||node.getAttribute("data-url");if(href)return{href:href,node:node}}}return null}var nativeOpen=window.open;window.open=function(url){if(parent!==window&&typeof url==="string"&&/^https?:\/\//.test(url)){parent.postMessage({type:"ecto:usercontent-link-click",href:url},"*");return null}return nativeOpen?nativeOpen.apply(window,arguments):null};document.addEventListener("click",function(e){var target=e.target instanceof Element?e.target:null;if(!target)return;if(parent===window)return;var a=target.closest?target.closest("a[href]"):null;if(a&&a.href&&/^https?:\/\//.test(a.href)&&a.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(a,a.href))return;var productId=extractProductId(target)||extractProductId(a);if(productId){e.preventDefault();parent.postMessage({type:"ecto-artifact-link-click",productId:productId},"*");return}e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:a.href},"*");return}var dataHref=findDataHref(target);if(dataHref&&/^https?:\/\//.test(dataHref.href)&&dataHref.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(dataHref.node,dataHref.href))return;e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:dataHref.href},"*")}},true)})();</script><script>(function(){var FOCUS_TYPE="ecto:artifact-focus-request";var CLOSE_TYPE="ecto:artifact-close-request";function focusArtifactDocument(){var body=document.body;if(!body)return;try{window.focus();}catch(e){}if(!body.hasAttribute("tabindex"))body.setAttribute("tabindex","-1");try{body.focus({preventScroll:true});}catch(e){try{body.focus();}catch(e2){}}}window.addEventListener("message",function(event){if(event.source!==window.parent)return;var data=event.data;if(!data||typeof data!=="object"||data.type!==FOCUS_TYPE)return;if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",focusArtifactDocument,{once:true});return;}focusArtifactDocument();});window.addEventListener("keydown",function(event){if(event.key!=="Escape")return;window.setTimeout(function(){if(event.defaultPrevented)return;window.parent.postMessage({type:CLOSE_TYPE},"*");},0);});})();</script></body>
 </html>
