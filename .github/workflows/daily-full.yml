@@ -1,1 +1,50 @@
+name: daily-full
+on:
+  schedule:
+    - cron: '0 17 * * *'
+    - cron: '45 17 * * *'
+    - cron: '30 18 * * *'
+    - cron: '15 19 * * *'
+    - cron: '0 20 * * *'
+    - cron: '45 20 * * *'
+    - cron: '30 21 * * *'
+  workflow_dispatch:
+    inputs:
+      resume:
+        description: '是否断点续跑 true=续跑查缺补漏 false=全清理重跑'
+        required: false
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
 
+concurrency:
+  group: fetch-full-market
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install baostock
+      - name: Run full market 500 batch 38min budget checkpoint
+        run: |
+          RESUME="${{ github.event.inputs.resume || 'true' }}"
+          python scripts/fetch-daily.py --resume $RESUME
+      - name: Commit per batch
+        run: |
+          git config user.name "data-bot"
+          git config user.email "bot@test.com"
+          git add data/
+          git diff --cached --quiet || git commit -m "full 500 batch resume=${{ github.event.inputs.resume || 'true' }} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push
