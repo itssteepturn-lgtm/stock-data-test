@@ -60,12 +60,14 @@
   .tabs{display:flex;gap:6px;margin:8px 0 10px;flex-wrap:wrap;}
   .tab{font-size:12px;padding:5px 12px;border-radius:8px;background:var(--panel);border:1px solid var(--line);color:var(--dim);}
   .tab.active{color:var(--text);border-color:var(--accent);background:rgba(74,144,226,.12);}
-  canvas.chart{width:100%;height:240px;background:var(--panel);border:1px solid var(--line);border-radius:10px;display:block;margin-bottom:8px;}
-  canvas.chart.small{height:88px;}
-  canvas.chart.half{height:120px;width:100%;}
+  canvas.chart{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:10px;display:block;margin-bottom:6px;}
+  canvas.chart.main{height:260px;}
+  canvas.chart.zq{height:140px;}
+  canvas.chart.intra{height:180px;}
+  canvas.chart.vol{height:58px;}
+  canvas.chart.macd{height:58px;}
   canvas.chart.mini{height:42px;background:transparent;border:none;}
-  .row2{display:flex;gap:8px;}
-  .row2 canvas{flex:1;}
+  .value-tags{display:flex;gap:8px;flex-wrap:wrap;font-size:10px;color:var(--dim);margin:2px 0 6px;}
   .hint{font-size:11px;color:var(--dim);text-align:center;padding:10px 0;}
   .cond-panel{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:10px;}
   .cond-row{display:flex;align-items:center;gap:6px;padding:5px 0;font-size:12px;}
@@ -128,13 +130,11 @@
       <div id="detail-meta" class="hint" style="text-align:left;padding:2px 0 4px;"></div>
       <div id="detail-price" class="detail-kv"></div>
       <div id="detail-cost" class="value-tags"></div>
-      <canvas id="chart-main" class="chart"></canvas>
-      <div class="row2">
-        <canvas id="chart-vol" class="chart small"></canvas>
-        <canvas id="chart-sub" class="chart small"></canvas>
-      </div>
-      <canvas id="chart-macd" class="chart small"></canvas>
-      <canvas id="chart-intra" class="chart"></canvas>
+      <canvas id="chart-main" class="chart main"></canvas>
+      <canvas id="chart-sub" class="chart zq"></canvas>
+      <canvas id="chart-intra" class="chart intra"></canvas>
+      <canvas id="chart-vol" class="chart vol"></canvas>
+      <canvas id="chart-macd" class="chart macd"></canvas>
       <div id="detail-zq" class="value-tags"></div>
       <div class="hint" id="detail-hint">点击K线显示光标贯穿，再点返回最新分时</div>
     </div>
@@ -212,7 +212,7 @@ async function getHistBars(secid, limit){
 }
 async function getLiveQuoteFull(secid){
   try{
-    const url=`https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f19,f20`;
+    const url=`https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f19,f20,f18`;
     const res=await fetch(url,{cache:'no-store'});
     if(!res.ok) throw new Error('east live http');
     const data=await res.json();
@@ -220,7 +220,7 @@ async function getLiveQuoteFull(secid){
     return {
       price:d.f43/100, open:d.f46/100, high:d.f44/100, low:d.f45/100, vol:d.f47, amount:d.f48,
       preClose:d.f60?d.f60/100:null,
-      pct:(d.f43&&d.f60)?((d.f43-d.f60)/d.f60*100):0
+      pct:(d.f43&&d.f60)?((d.f43-d.f60)/d.f60*100): (d.f43&&d.f18?d.f18/100:0)
     };
   }catch(e){ return null; }
 }
@@ -374,11 +374,19 @@ async function fillRowQuote(item, row, isUpdating=false){
     const live=await getLiveQuoteFull(item.code);
     let last=bars[bars.length-1];
     let prev=bars.length>=2?bars[bars.length-2]:null;
+    let pct=0;
+    if(prev) pct=(last.close-prev.close)/prev.close*100;
     if(live){
       last={...last, close:live.price, high:Math.max(last.high, live.high), low:Math.min(last.low, live.low)};
-      row._livePct=live.pct; row._livePrice=live.price;
+      row._livePrice=live.price;
+      // 优先用接口返回的涨跌幅，如果为0则用计算的
+      if(Math.abs(live.pct)>0.001){
+        pct=live.pct;
+      } else if(prev){
+        pct=(live.price-prev.close)/prev.close*100;
+      }
+      row._livePct=pct;
     }
-    const pct=prev? (live?live.pct: (last.close-prev.close)/prev.close*100):0;
     const priceEl=row.querySelector('.p'); const pctEl=row.querySelector('.pct');
     if(priceEl) priceEl.textContent=(live?live.price:last.close).toFixed(2);
     if(pctEl){ pctEl.textContent=(pct>=0?'+':'')+pct.toFixed(2)+'%'; pctEl.className='pct '+(pct>0?'up':pct<0?'down':'flat'); priceEl.className='p '+(pct>0?'up':pct<0?'down':'flat'); }
