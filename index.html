@@ -27,7 +27,7 @@
 <meta name="robots" content="noindex, nofollow">
 <title>盘面 · 正式版 全市场</title>
 <style>
-  :root{--bg:#0d1117;--panel:#151b23;--line:#232b36;--text:#e6e9ef;--dim:#8891a0;--up:#e5484d;--down:#2ea567;--accent:#4a90e2;--shimmer:#1a232f;}
+  :root{--bg:#0d1117;--panel:#151b23;--line:#232b36;--text:#e6e9ef;--dim:#8891a0;--up:#e5484d;--down:#2ea567;--accent:#4a90e2;}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
   html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;height:100%;overscroll-behavior-y:none;}
   #app{max-width:760px;margin:0 auto;padding:12px 12px 80px;}
@@ -57,20 +57,16 @@
   .detail-head .title{font-size:15px;font-weight:600;flex:1;}
   .detail-kv{display:flex;gap:12px;font-size:11px;color:var(--dim);flex-wrap:wrap;margin:4px 0 6px;}
   .detail-kv b{color:var(--text);font-weight:600;}
-  .tabs{display:flex;gap:6px;margin:8px 0 10px;flex-wrap:wrap;}
-  .tab{font-size:12px;padding:5px 12px;border-radius:8px;background:var(--panel);border:1px solid var(--line);color:var(--dim);}
-  .tab.active{color:var(--text);border-color:var(--accent);background:rgba(74,144,226,.12);}
   canvas.chart{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:10px;display:block;margin-bottom:6px;}
-  canvas.chart.main{height:240px;}
+  canvas.chart.main{height:260px;}
   canvas.chart.zq{height:105px;}
   canvas.chart.intra{height:135px;}
-  canvas.chart.vol{height:54px;}
-  canvas.chart.macd{height:54px;}
+  canvas.chart.vol{height:52px;}
+  canvas.chart.macd{height:52px;}
   canvas.chart.mini{height:42px;background:transparent;border:none;}
   .value-tags{display:flex;gap:8px;flex-wrap:wrap;font-size:10px;color:var(--dim);margin:2px 0 6px;}
   .value-tags span{border:1px solid var(--line);border-radius:6px;padding:2px 6px;}
   .hint{font-size:11px;color:var(--dim);text-align:center;padding:10px 0;}
-  .cond-panel{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin-bottom:10px;}
   .cond-row{display:flex;align-items:center;gap:6px;padding:5px 0;font-size:12px;}
   .cond-row label.lbl{width:70px;color:var(--dim);flex-shrink:0;}
   .cond-row select,.cond-row input[type=number],.cond-row input[type=date]{flex:1;background:#0d1117;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px;min-width:0;}
@@ -135,7 +131,7 @@
       <canvas id="chart-vol" class="chart vol"></canvas>
       <canvas id="chart-macd" class="chart macd"></canvas>
       <div id="detail-zq" class="value-tags"></div>
-      <div class="hint" id="detail-hint">点击K线显示光标贯穿，再点返回最新分时</div>
+      <div class="hint" id="detail-hint">点击K线显示光标，再点返回</div>
     </div>
   </div>
 </div>
@@ -207,7 +203,6 @@ async function getFullHistory(secid, limit=150){
   const j=await fetchJsonWithFallback(urls,3500);
   const raw=j.bars||j;
   if(!raw||raw.length<1) throw new Error('后台无 '+code);
-  // 指数的 raw 可能是 [{date,open...}] 或 {bars}
   const bars=Array.isArray(raw)?raw:(raw.bars||[]);
   return bars.slice(-Math.min(limit,150)).map(b=>({
     date:b.date,open:b.open,close:b.close,high:b.high,low:b.low,vol:b.vol||0,amount:b.amount||0,turnover:b.turnover||0,
@@ -218,38 +213,43 @@ async function getFullHistory(secid, limit=150){
 }
 const histCache={};
 async function getHistBars(secid, limit){
-  if(histCache[secid]&&histCache[secid].length>=Math.min(limit,150)) return histCache[secid];
+  if(histCache[secid]) return JSON.parse(JSON.stringify(histCache[secid])).slice(-Math.min(limit,150));
   const bars=await getFullHistory(secid, limit);
-  histCache[secid]=bars; return bars;
+  histCache[secid]=bars;
+  return JSON.parse(JSON.stringify(bars)).slice(-Math.min(limit,150));
 }
 async function getLiveQuoteFull(secid){
   try{
-    const url=`https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f19,f20,f18`;
+    const isIndex=TEST_INDEXES.some(x=>x.code===secid);
+    const url=`https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f19,f20,f18,f170`;
     const res=await fetch(url,{cache:'no-store'});
     if(!res.ok) throw new Error('east live http');
     const data=await res.json();
     const d=data?.data; if(!d||!d.f43) throw new Error('east live no data');
+    // 指数的昨收 f60 经常错，用 f19 或缓存
+    let preClose=d.f60?d.f60/100:null;
+    if(isIndex){
+      // 指数用 f19 可能是昨收，或者用 f46? 这里先用 f60 但做合理性检查
+      if(preClose && Math.abs(preClose - d.f43/100)/ (d.f43/100) > 0.3){
+        preClose=null; // 异常，比如 24 vs 1560，丢弃
+      }
+    }
+    let pct=0;
+    if(d.f43&&preClose) pct=(d.f43-preClose)/preClose*100;
+    else if(d.f170) pct=d.f170/100; // 东财涨跌幅字段
     return {
       price:d.f43/100, open:d.f46/100, high:d.f44/100, low:d.f45/100, vol:d.f47, amount:d.f48,
-      preClose:d.f60?d.f60/100:null,
-      pct:(d.f43&&d.f60)?((d.f43-d.f60)/d.f60*100): (d.f43&&d.f18?d.f18/100:0)
+      preClose:preClose,
+      pct:pct
     };
   }catch(e){ return null; }
 }
 async function getIntraday(secid){
   try{
-    if(SRC==='tencent'){
-      const tcode=(secid.startsWith('1.')?'sh':'sz')+secid.split('.')[1];
-      const url=`https://web.ifzq.gtimg.cn/appstock/app/minute/query?code=${tcode}`;
-      const res=await fetch(url,{cache:'no-store'}); const data=await res.json();
-      const rows=data?.data?.[tcode]?.data?.data; if(!rows) return [];
-      return rows.map(line=>{ const parts=line.trim().split(/\s+/); const hhmm=parts[0]; return {time:hhmm.slice(0,2)+':'+hhmm.slice(2),price:+parts[1]}; });
-    }else{
-      const url=`https://push2.eastmoney.com/api/qt/stock/trends2/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f52,f53,f54&iscr=0&iscca=0`;
-      const res=await fetch(url,{cache:'no-store'}); const data=await res.json();
-      const trends=data?.data?.trends; if(!trends) return [];
-      return trends.map(t=>{ const a=t.split(','); return {time:a[0].slice(11,16),price:+a[1]}; });
-    }
+    const url=`https://push2.eastmoney.com/api/qt/stock/trends2/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f52,f53,f54&iscr=0&iscca=0`;
+    const res=await fetch(url,{cache:'no-store'}); const data=await res.json();
+    const trends=data?.data?.trends; if(!trends) return [];
+    return trends.map(t=>{ const a=t.split(','); return {time:a[0].slice(11,16),price:+a[1], avg:+a[2]}; });
   }catch(e){ return []; }
 }
 function calcMACD(closes){
@@ -264,113 +264,161 @@ function calcMACD(closes){
   return {dif,dea,macd};
 }
 // ---- 绘制 ----
-function drawMain(canvas, bars, costLines, vol, highlightIdx, isIndex=false){
-  const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight;
+// cost颜色：以前 50绿色 75黄色 90红色，都是实线
+const COST_COLORS={50:'#2ea567',75:'#e0b23c',90:'#e5484d'};
+
+function drawMain(canvas, bars, costLines, highlightIdx, isIndex=false){
+  const dpr=window.devicePixelRatio||1;
+  const w=canvas.clientWidth,h=canvas.clientHeight;
   canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
   if(!bars||!bars.length) return;
   const highs=bars.map(b=>b.high), lows=bars.map(b=>b.low);
-  const minL=Math.min(...lows), maxH=Math.max(...highs); const pad=(maxH-minL)*0.08||1;
-  const minY=minL-pad, maxY=maxH+pad; const range=maxY-minY||1;
+  let minL=Math.min(...lows), maxH=Math.max(...highs); let pad=(maxH-minL)*0.08||1;
+  let minY=minL-pad, maxY=maxH+pad; let range=maxY-minY||1;
   const y=v=>h-((v-minY)/range)*h;
-  const n=bars.length; const bw=Math.max(2, w/n*0.6);
-  // cost lines - 指数不画
+  const n=bars.length;
+  // 留右边 8px 边距，保证最新K线看全
+  const rightPad=10;
+  const plotW=w-rightPad;
+  const x=i=> (n===1?plotW/2 : i/(n-1)*plotW);
+  const bw=Math.max(2, plotW/n*0.6);
+
+  // cost 实线
   if(!isIndex && costLines){
-    const colors=['#4a90e2','#e0b23c','#c46be0'];
-    const styles=[[],[6,3],[3,3]]; // 以前实线/虚线样式：50实线 75/90虚线
-    // 按你要求：以前的 50蓝色实线，75黄色虚线，90紫色虚线
+    const order=[50,75,90];
     costLines.forEach((line,li)=>{
       if(!line) return;
-      ctx.strokeStyle=colors[li%3]; ctx.lineWidth=1; ctx.setLineDash(li===0?[]:styles[li]); ctx.beginPath(); let st=false;
-      line.forEach((v,i)=>{ if(v==null) return; const x=i/(n-1)*w; if(!st){ctx.moveTo(x,y(v));st=true;} else ctx.lineTo(x,y(v));}); ctx.stroke(); ctx.setLineDash([]);
+      const key=order[li];
+      ctx.strokeStyle=COST_COLORS[key]||'#888'; ctx.lineWidth=1; ctx.setLineDash([]); // 实线
+      ctx.beginPath(); let st=false;
+      line.forEach((v,i)=>{ if(v==null) return; const xx=x(i); if(!st){ctx.moveTo(xx,y(v));st=true;} else ctx.lineTo(xx,y(v));}); ctx.stroke();
     });
   }
+
   bars.forEach((b,i)=>{
-    const x=i/(n-1)*w; const oY=y(b.open), cY=y(b.close), hY=y(b.high), lY=y(b.low);
+    const xx=x(i); const oY=y(b.open), cY=y(b.close), hY=y(b.high), lY=y(b.low);
     const up=b.close>=b.open;
     ctx.strokeStyle=up?'#e5484d':'#2ea567'; ctx.fillStyle=up?'#e5484d':'#2ea567';
-    ctx.beginPath(); ctx.moveTo(x,hY); ctx.lineTo(x,lY); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(xx,hY); ctx.lineTo(xx,lY); ctx.stroke();
     const bodyH=Math.max(1, Math.abs(cY-oY));
-    ctx.fillRect(x-bw/2, Math.min(oY,cY), bw, bodyH||1);
-    if(b._live){
-      ctx.fillStyle='rgba(230,233,239,0.9)'; ctx.font='9px sans-serif'; ctx.fillText('今', x-4, Math.min(oY,cY)-4);
-    }
+    ctx.fillRect(xx-bw/2, Math.min(oY,cY), bw, bodyH||1);
   });
-  if(highlightIdx!=null){ const x=highlightIdx/(n-1)*w; ctx.strokeStyle='#e6e9ef'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); ctx.setLineDash([]); }
+
+  // 最新价标签，像分时那样，显示在主图右上角
+  const last=bars[bars.length-1];
+  if(last && last._live){
+    const prev=bars.length>=2?bars[bars.length-2]:null;
+    const pct=prev? (last.close-prev.close)/prev.close*100:0;
+    const col=pct>=0?'#e5484d':'#2ea567';
+    ctx.fillStyle=col; ctx.font='11px sans-serif';
+    ctx.fillText(`${last.close.toFixed(2)} ${pct>=0?'+':''}${pct.toFixed(2)}%`, 6, 14);
+  }
+
+  if(highlightIdx!=null){
+    const xx=x(highlightIdx); ctx.strokeStyle='#e6e9ef'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(xx,0); ctx.lineTo(xx,h); ctx.stroke(); ctx.setLineDash([]);
+    // 光标处显示日期和涨跌幅
+    const b=bars[highlightIdx]; if(b){
+      const prev=bars[highlightIdx-1]; const pct=prev? (b.close-prev.close)/prev.close*100:0;
+      const isLive=b._live?' 最新':''; 
+      const txt=`${b.date} ${b.close.toFixed(2)} ${pct>=0?'+':''}${pct.toFixed(2)}%${isLive}`;
+      ctx.fillStyle='#e6e9ef'; ctx.font='10px sans-serif';
+      const tx=Math.min(xx+4, w-120); ctx.fillText(txt, tx, 12);
+    }
+  }
 }
+
 function drawMiniK(canvas, bars){
-  const dpr=window.devicePixelRatio||1; const w=canvas.width,h=canvas.height;
-  const ctx=canvas.getContext('2d'); ctx.clearRect(0,0,w,h);
+  const dpr=window.devicePixelRatio||1;
+  const cssW=canvas.clientWidth||80, cssH=canvas.clientHeight||42;
+  canvas.width=cssW*dpr; canvas.height=cssH*dpr;
+  const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,cssW,cssH);
   if(!bars||bars.length<2) return;
-  // 限制只画最近60根，保证能看到一根根K线
   const show=bars.slice(-60);
   const highs=show.map(b=>b.high), lows=show.map(b=>b.low);
   let minL=Math.min(...lows), maxH=Math.max(...highs);
   let range=maxH-minL||1; const pad=range*0.08; minL-=pad; maxH+=pad; range=maxH-minL;
-  const y=v=>h-((v-minL)/range)*h;
-  const n=show.length;
-  const bw=Math.max(1, w/n*0.6);
+  const y=v=>cssH-((v-minL)/range)*cssH;
+  const n=show.length; const rightPad=2; const plotW=cssW-rightPad;
+  const x=i=> i/(n-1)*plotW;
+  const bw=Math.max(1, plotW/n*0.55);
   show.forEach((b,i)=>{
-    const x=i/(n-1)*w;
-    const oY=y(b.open), cY=y(b.close), hY=y(b.high), lY=y(b.low);
+    const xx=x(i); const oY=y(b.open), cY=y(b.close), hY=y(b.high), lY=y(b.low);
     const up=b.close>=b.open;
     ctx.strokeStyle=up?'#e5484d':'#2ea567'; ctx.fillStyle=up?'#e5484d':'#2ea567';
-    ctx.beginPath(); ctx.moveTo(x,hY); ctx.lineTo(x,lY); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(xx,hY); ctx.lineTo(xx,lY); ctx.stroke();
     const bodyH=Math.max(1, Math.abs(cY-oY));
-    ctx.fillRect(x-bw/2, Math.min(oY,cY), bw, bodyH||1);
-    if(b._live){
-      ctx.fillStyle='#e6e9ef'; ctx.fillRect(x-bw/2-1, Math.min(oY,cY)-1, bw+2, 1);
-    }
+    ctx.fillRect(xx-bw/2, Math.min(oY,cY), bw, bodyH||1);
   });
 }
+
 function drawVOL(canvas, bars, highlightIdx){
   const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight; canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
   if(!bars||!bars.length) return;
   const maxV=Math.max(...bars.map(b=>b.vol||0))*1.2||1;
   const y=v=>h-(v/maxV)*h;
-  const n=bars.length; const bw=Math.max(1, w/n*0.6);
+  const n=bars.length; const rightPad=10; const plotW=w-rightPad;
+  const x=i=> i/(n-1)*plotW;
+  const bw=Math.max(1, plotW/n*0.6);
   bars.forEach((b,i)=>{
-    const x=i/(n-1)*w; const yy=y(b.vol||0); const up=b.close>=b.open;
-    ctx.fillStyle=up?'#e5484d':'#2ea567'; ctx.fillRect(x-bw/2, yy, bw, h-yy);
+    const xx=x(i); const yy=y(b.vol||0); const up=b.close>=b.open;
+    ctx.fillStyle=up?'#e5484d':'#2ea567'; ctx.fillRect(xx-bw/2, yy, bw, h-yy);
   });
-  if(highlightIdx!=null){ const x=highlightIdx/(n-1)*w; ctx.strokeStyle='#e6e9ef'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); ctx.setLineDash([]); }
+  if(highlightIdx!=null){ const xx=x(highlightIdx); ctx.strokeStyle='#e6e9ef'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(xx,0); ctx.lineTo(xx,h); ctx.stroke(); ctx.setLineDash([]); }
 }
 function drawZQ(canvas, zq1,zq, highlightIdx){
   const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight; canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
   if(!zq1||!zq1.length) return;
   const y=v=>h-(v/100)*h;
-  [[100,'#3a4250'],[50,'#e5484d'],[0,'#3a4250']].forEach(([v,c])=>{ ctx.strokeStyle=c; ctx.setLineDash(v===50?[]:[3,3]); ctx.beginPath(); ctx.moveTo(0,y(v)); ctx.lineTo(w,y(v)); ctx.stroke();}); ctx.setLineDash([]);
-  [[zq1,'#4a90e2'],[zq,'#c46be0']].forEach(([s,c])=>{ if(!s) return; ctx.strokeStyle=c; ctx.lineWidth=1.2; ctx.beginPath(); let st=false; s.forEach((v,i)=>{ if(v==null) return; const x=i/(s.length-1)*w; if(!st){ctx.moveTo(x,y(v));st=true;} else ctx.lineTo(x,y(v));}); ctx.stroke();});
-  if(highlightIdx!=null){ const x=highlightIdx/(zq1.length-1)*w; ctx.strokeStyle='#e6e9ef'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); ctx.setLineDash([]); }
+  const n=zq1.length; const rightPad=10; const plotW=w-rightPad;
+  const x=i=> i/(n-1)*plotW;
+  [[100,'#3a4250'],[50,'#e5484d'],[0,'#3a4250']].forEach(([v,c])=>{ ctx.strokeStyle=c; ctx.setLineDash(v===50?[]:[3,3]); ctx.beginPath(); ctx.moveTo(0,y(v)); ctx.lineTo(plotW,y(v)); ctx.stroke();}); ctx.setLineDash([]);
+  [[zq1,'#4a90e2'],[zq,'#c46be0']].forEach(([s,c])=>{ if(!s) return; ctx.strokeStyle=c; ctx.lineWidth=1.2; ctx.beginPath(); let st=false; s.forEach((v,i)=>{ if(v==null) return; const xx=x(i); if(!st){ctx.moveTo(xx,y(v));st=true;} else ctx.lineTo(xx,y(v));}); ctx.stroke();});
+  if(highlightIdx!=null){ const xx=x(highlightIdx); ctx.strokeStyle='#e6e9ef'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(xx,0); ctx.lineTo(xx,h); ctx.stroke(); ctx.setLineDash([]); }
 }
 function drawMACD(canvas, dif,dea,macd, highlightIdx){
   const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight; canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
   if(!dif||!dif.length) return;
   const all=[...dif,...dea,...macd]; const max=Math.max(...all), min=Math.min(...all); const range=(max-min)||1; const y=v=>h-((v-min)/range)*h;
-  const y0=y(0); ctx.strokeStyle='#3a4250'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(0,y0); ctx.lineTo(w,y0); ctx.stroke(); ctx.setLineDash([]);
-  const n=dif.length;
-  for(let i=0;i<n;i++){ const x=i/(n-1)*w; const v=macd[i]; if(v==null) continue; const yy=y(v); ctx.fillStyle=v>=0?'#e5484d':'#2ea567'; ctx.fillRect(x-1, Math.min(yy,y0), 2, Math.abs(yy-y0)); }
-  [[dif,'#4a90e2'],[dea,'#e0b23c']].forEach(([s,c])=>{ ctx.strokeStyle=c; ctx.lineWidth=1.1; ctx.beginPath(); let st=false; s.forEach((v,i)=>{ if(v==null) return; const x=i/(n-1)*w; if(!st){ctx.moveTo(x,y(v));st=true;} else ctx.lineTo(x,y(v));}); ctx.stroke();});
-  if(highlightIdx!=null){ const x=highlightIdx/(n-1)*w; ctx.strokeStyle='#e6e9ef'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,h); ctx.stroke(); ctx.setLineDash([]); }
+  const y0=y(0); ctx.strokeStyle='#3a4250'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(0,y0); ctx.lineTo(w-10,y0); ctx.stroke(); ctx.setLineDash([]);
+  const n=dif.length; const rightPad=10; const plotW=w-rightPad; const x=i=> i/(n-1)*plotW;
+  for(let i=0;i<n;i++){ const xx=x(i); const v=macd[i]; if(v==null) continue; const yy=y(v); ctx.fillStyle=v>=0?'#e5484d':'#2ea567'; ctx.fillRect(xx-1, Math.min(yy,y0), 2, Math.abs(yy-y0)); }
+  [[dif,'#4a90e2'],[dea,'#e0b23c']].forEach(([s,c])=>{ ctx.strokeStyle=c; ctx.lineWidth=1.1; ctx.beginPath(); let st=false; s.forEach((v,i)=>{ if(v==null) return; const xx=x(i); if(!st){ctx.moveTo(xx,y(v));st=true;} else ctx.lineTo(xx,y(v));}); ctx.stroke();});
+  if(highlightIdx!=null){ const xx=x(highlightIdx); ctx.strokeStyle='#e6e9ef'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(xx,0); ctx.lineTo(xx,h); ctx.stroke(); ctx.setLineDash([]); }
 }
-function drawIntra(canvas, trends, prevClose){
+function getLimitPct(secid){
+  const code=secid.split('.')[1];
+  if(code.startsWith('30')||code.startsWith('688')) return 20;
+  if(code.startsWith('8')||code.startsWith('4')) return 30;
+  if(code==='000001'||code==='399001'||code==='399006'||code==='000688') return 10;
+  return 10;
+}
+function drawIntra(canvas, trends, prevClose, secid){
   const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight; canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
   if(!trends||!trends.length) { ctx.fillStyle='#8891a0'; ctx.font='11px sans-serif'; ctx.fillText('无分时', w/2-20, h/2); return; }
-  const prices=trends.map(t=>t.price); const base=prevClose||prices[0];
-  let max=Math.max(...prices, base), min=Math.min(...prices, base);
-  let range=(max-min)||base*0.02||1;
-  const pad=range*0.18;
-  max+=pad; min-=pad; range=max-min;
+  const prices=trends.map(t=>t.price);
+  const base=prevClose||prices[0];
+  // 零轴固定在中间，上下固定 10%/20%/30% 根据涨跌幅限制
+  const limitPct=getLimitPct(secid);
+  const max=base*(1+limitPct/100);
+  const min=base*(1-limitPct/100);
+  const range=max-min;
   const y=v=>h-((v-min)/range)*h;
   const TOTAL_MIN=242;
   const curCount=trends.length;
-  const progress=Math.min(1, curCount/242);
-  const drawW=w*progress;
-  const y0=y(base); ctx.strokeStyle='#3a4250'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(0,y0); ctx.lineTo(drawW,y0); ctx.stroke(); ctx.setLineDash([]);
+  const y0=y(base); // 零轴在中间
+  ctx.strokeStyle='#3a4250'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(0,y0); ctx.lineTo(w,y0); ctx.stroke(); ctx.setLineDash([]);
+  // 上下 10% 20% 30% 刻度线
+  [10,20,30].forEach(p=>{
+    if(p>limitPct) return;
+    const yUp=y(base*(1+p/100)), yDn=y(base*(1-p/100));
+    ctx.strokeStyle='#232b36'; ctx.setLineDash([2,4]); ctx.beginPath(); ctx.moveTo(0,yUp); ctx.lineTo(w,yUp); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0,yDn); ctx.lineTo(w,yDn); ctx.stroke(); ctx.setLineDash([]);
+    ctx.fillStyle='#4a5568'; ctx.font='9px sans-serif'; ctx.fillText(`+${p}%`, w-28, yUp+3); ctx.fillText(`-${p}%`, w-28, yDn+3);
+  });
+  // 上下午分界
   const midX= (120/242)*w;
-  if(progress>120/242){
-    ctx.strokeStyle='#232b36'; ctx.setLineDash([2,4]); ctx.beginPath(); ctx.moveTo(midX,0); ctx.lineTo(midX,h); ctx.stroke(); ctx.setLineDash([]);
-    ctx.fillStyle='#4a5568'; ctx.font='9px sans-serif'; ctx.fillText('11:30/13:00', midX+4, 10);
-  }
+  ctx.strokeStyle='#232b36'; ctx.setLineDash([2,4]); ctx.beginPath(); ctx.moveTo(midX,0); ctx.lineTo(midX,h); ctx.stroke(); ctx.setLineDash([]);
+  ctx.fillStyle='#4a5568'; ctx.font='9px sans-serif'; ctx.fillText('11:30/13:00', midX+4, 10);
+
   const last=prices[prices.length-1]; const col=last>=base?'#e5484d':'#2ea567';
   ctx.strokeStyle=col; ctx.lineWidth=1.2; ctx.beginPath();
   trends.forEach((t,i)=>{
@@ -395,7 +443,6 @@ function buildRow(item, container, onClick){
   row.onclick=()=>onClick(item,row); container.appendChild(row); return row;
 }
 async function fillRowQuote(item, row, isUpdating=false){
-  // 灰色不明显刷新闪动
   if(isUpdating) row.classList.add('updating');
   else { row.classList.add('updating'); setTimeout(()=>row.classList.remove('updating'), 800); }
   try{
@@ -406,10 +453,9 @@ async function fillRowQuote(item, row, isUpdating=false){
     let prev=bars.length>=2?bars[bars.length-2]:null;
     let pct=0;
     if(prev) pct=(last.close-prev.close)/prev.close*100;
-    if(live){
+    if(live && live.preClose){
       const today=todayStrLocal();
       const isSameDay=last.date===today;
-      // 合并今日实时K，首页也显示
       if(isSameDay){
         last={...last, close:live.price, high:Math.max(last.high, live.high), low:Math.min(last.low, live.low), _live:true};
         bars[bars.length-1]=last;
@@ -419,9 +465,19 @@ async function fillRowQuote(item, row, isUpdating=false){
       }
       if(Math.abs(live.pct)>0.001) pct=live.pct;
       else if(prev) pct=(live.price-prev.close)/prev.close*100;
+      else if(live.preClose) pct=(live.price-live.preClose)/live.preClose*100;
+    } else if(live){
+      // 指数 preClose 异常时，用上一根算
+      const today=todayStrLocal();
+      if(prev){
+        pct=(live.price-prev.close)/prev.close*100;
+      }
+      last={...last, close:live.price, _live:true};
+      bars[bars.length-1]=last;
     }
     const priceEl=row.querySelector('.p'); const pctEl=row.querySelector('.pct');
-    if(priceEl) priceEl.textContent=(live?live.price:last.close).toFixed(2);
+    const displayPrice=live?live.price:last.close;
+    if(priceEl) priceEl.textContent=displayPrice.toFixed(2);
     if(pctEl){ pctEl.textContent=(pct>=0?'+':'')+pct.toFixed(2)+'%'; pctEl.className='pct '+(pct>0?'up':pct<0?'down':'flat'); priceEl.className='p '+(pct>0?'up':pct<0?'down':'flat'); }
     const canvas=row.querySelector('canvas'); if(canvas){ drawMiniK(canvas, bars); }
     row._pct=pct; row._bars=bars;
@@ -491,7 +547,6 @@ document.getElementById('add-btn').onclick=()=>{
   document.getElementById('add-code').value=''; renderCatBar(); renderWatchlist();
 };
 
-// ---- 指数列表 ----
 async function renderIndexList(){
   const container=document.getElementById('idx-list'); container.innerHTML='';
   for(const item of TEST_INDEXES){
@@ -501,8 +556,7 @@ async function renderIndexList(){
   setInterval(()=>{ document.querySelectorAll('#idx-list .card').forEach((row,i)=>{ const item=TEST_INDEXES[i]; if(item) fillRowQuote(item,row,true); }); }, 5000);
 }
 
-// ---- 详情页 ----
-let detailState={item:null, bars:[], mode:'intra', cursorIdx:null};
+let detailState={item:null, bars:[], cursorIdx:null};
 function openDetail(item){
   detailState.item=item; document.getElementById('detail-title').textContent=item.name+' '+item.short; document.getElementById('detail').classList.add('open');
   loadDetail();
@@ -520,6 +574,10 @@ async function loadDetail(){
     const trends=await getIntraday(item.code);
     let merged=bars.slice();
     let prevClose=bars.length>=1?bars[bars.length-1].close: (liveFull?liveFull.preClose:null);
+    if(liveFull && liveFull.preClose && Math.abs(liveFull.preClose - liveFull.price)/liveFull.price > 0.3){
+      // 指数昨收异常，丢弃，用上一根
+      liveFull.preClose=prevClose;
+    }
     const today=todayStrLocal();
     if(liveFull){
       const isSameDay=merged.length && merged[merged.length-1].date===today;
@@ -532,9 +590,12 @@ async function loadDetail(){
     detailState.bars=merged;
     const last=merged[merged.length-1];
     const prev=merged.length>=2?merged[merged.length-2]:null;
-    const pct=liveFull?liveFull.pct : (prev? (last.close-prev.close)/prev.close*100:0);
+    let pct=0;
+    if(liveFull && liveFull.preClose) pct=(liveFull.price-liveFull.preClose)/liveFull.preClose*100;
+    else if(prev) pct=(last.close-prev.close)/prev.close*100;
+    else if(liveFull) pct=liveFull.pct;
     metaEl.textContent=`${last.date}  ${last.open.toFixed(2)}/${last.high.toFixed(2)}/${last.low.toFixed(2)}/${last.close.toFixed(2)}  量${(last.vol||0).toFixed(0)}`;
-    priceEl.innerHTML=`<span>现价 <b class="${pct>=0?'up':'down'}">${(liveFull?liveFull.price:last.close).toFixed(2)}</b></span><span>涨跌 <b class="${pct>=0?'up':'down'}">${pct>=0?'+':''}${pct.toFixed(2)}%</b></span><span>昨收 ${prev?prev.close.toFixed(2):'--'}</span>`;
+    priceEl.innerHTML=`<span>现价 <b class="${pct>=0?'up':'down'}">${(liveFull?liveFull.price:last.close).toFixed(2)}</b></span><span>涨跌 <b class="${pct>=0?'up':'down'}">${pct>=0?'+':''}${pct.toFixed(2)}%</b></span><span>昨收 ${prev?prev.close.toFixed(2):(liveFull?.preClose?liveFull.preClose.toFixed(2):'--')}</span>`;
 
     const costEl=document.getElementById('detail-cost');
     const zqEl=document.getElementById('detail-zq');
@@ -542,8 +603,7 @@ async function loadDetail(){
       costEl.innerHTML=`<span style="color:var(--dim)">指数不显示cost/zq</span>`;
       zqEl.innerHTML='';
     } else {
-      // cost三根线以前的颜色，数值对应颜色显示
-      costEl.innerHTML=`<span style="color:#4a90e2">cost50 <b style="color:#4a90e2">${last.cost50?last.cost50.toFixed(2):'--'}</b></span><span style="color:#e0b23c">cost75 <b style="color:#e0b23c">${last.cost75?last.cost75.toFixed(2):'--'}</b></span><span style="color:#c46be0">cost90 <b style="color:#c46be0">${last.cost90?last.cost90.toFixed(2):'--'}</b></span>`;
+      costEl.innerHTML=`<span style="color:${COST_COLORS[50]}">cost50 <b style="color:${COST_COLORS[50]}">${last.cost50?last.cost50.toFixed(2):'--'}</b></span><span style="color:${COST_COLORS[75]}">cost75 <b style="color:${COST_COLORS[75]}">${last.cost75?last.cost75.toFixed(2):'--'}</b></span><span style="color:${COST_COLORS[90]}">cost90 <b style="color:${COST_COLORS[90]}">${last.cost90?last.cost90.toFixed(2):'--'}</b></span>`;
       zqEl.innerHTML=`<span style="color:#4a90e2">zq1 <b style="color:#4a90e2">${last.zq1!=null?last.zq1.toFixed(1)+'%':'--'}</b></span><span style="color:#c46be0">zq <b style="color:#c46be0">${last.zq!=null?last.zq.toFixed(1)+'%':'--'}</b></span><span>昨收 ${prev?prev.close.toFixed(2):'--'}</span>`;
     }
 
@@ -552,27 +612,27 @@ async function loadDetail(){
     const macd=calcMACD(closes);
     const toShow=merged.slice(-60);
     const sliceCost=costLines.map(l=>l.slice(-60));
-    drawMain(document.getElementById('chart-main'), toShow, sliceCost, null, detailState.cursorIdx, isIndex);
+    drawMain(document.getElementById('chart-main'), toShow, sliceCost, detailState.cursorIdx, isIndex);
     if(isIndex){
       document.getElementById('chart-sub').style.display='none';
     } else {
       document.getElementById('chart-sub').style.display='block';
       drawZQ(document.getElementById('chart-sub'), toShow.map(b=>b.zq1), toShow.map(b=>b.zq), detailState.cursorIdx);
     }
-    drawIntra(document.getElementById('chart-intra'), trends, prevClose|| (prev?prev.close: last.close));
+    drawIntra(document.getElementById('chart-intra'), trends, prevClose|| (prev?prev.close: last.close), item.code);
     drawVOL(document.getElementById('chart-vol'), toShow, detailState.cursorIdx);
     drawMACD(document.getElementById('chart-macd'), macd.dif.slice(-60), macd.dea.slice(-60), macd.macd.slice(-60), detailState.cursorIdx);
   }catch(e){ metaEl.textContent='加载失败 '+e.message; }
 }
 document.getElementById('chart-main').onclick=(e)=>{
   const canvas=e.target; const rect=canvas.getBoundingClientRect(); const x=e.clientX-rect.left;
-  const n=detailState.bars.slice(-60).length; const idx=Math.round(x/rect.width*(n-1));
+  const n=detailState.bars.slice(-60).length; const idx=Math.round(x/(canvas.clientWidth-10)*(n-1));
   if(detailState.cursorIdx===idx){ detailState.cursorIdx=null; }
   else { detailState.cursorIdx=idx; }
   loadDetail();
 };
 
-// ---- 选股相关 ----
+// ---- 选股 ----
 let condId=0;
 const condTypes=[
   {k:'close_above_cost50', label:'收盘>cost50'},
@@ -645,7 +705,7 @@ function estimateNeededBars(fromDate){
   return Math.min(150, Math.ceil(diff)+20);
 }
 async function poolRun(items, fn, concurrency=20, onProgress){
-  let idx=0, done=0; const results=[];
+  let idx=0, done=0;
   const run=async()=>{
     while(idx<items.length){
       const cur=idx++; const it=items[cur];
@@ -653,7 +713,7 @@ async function poolRun(items, fn, concurrency=20, onProgress){
       done++; if(onProgress) onProgress(done, items.length);
     }
   };
-  await Promise.all(Array.from({length:concurrency},run)); if(onProgress) onProgress(done,items.length); return results;
+  await Promise.all(Array.from({length:concurrency},run)); if(onProgress) onProgress(done,items.length);
 }
 async function getFullMarketList(){
   try{
@@ -663,13 +723,10 @@ async function getFullMarketList(){
       `https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/stock_list.json?t=${Date.now()}`
     ];
     const j = await fetchJsonWithFallback(urls, 4000);
-    if(Array.isArray(j) && j.length>100){
-      return j;
-    }
+    if(Array.isArray(j) && j.length>100) return j;
   }catch(e){}
   return TEST_CODES.map(c=>{ const secid=codeToSecid(c); return {code:secid,name:c,short:c,type:'stock'}; });
 }
-function matchesBoardFilter(item){ return true; }
 let scanCancelled=false;
 document.getElementById('run-sel-btn').onclick=async()=>{
   const settings=readConditionSettings();
@@ -680,49 +737,44 @@ document.getElementById('run-sel-btn').onclick=async()=>{
   if(!hasAnyActiveFilter(settings)){ progEl.textContent='至少设置一个条件'; return; }
   resultsEl.innerHTML=''; progEl.textContent='读取清单...';
   let list=await getFullMarketList();
-  list=list.filter(matchesBoardFilter);
   scanCancelled=false; document.getElementById('stop-scan-btn').style.display='block';
   progEl.textContent=`正在扫描 0/${list.length}...`;
   const needed=estimateNeededBars(fromDate);
-  let matchRows=[];
-  const MAX_ROWS=300;
+  let matchRows=[]; const MAX_ROWS=300;
   await poolRun(list, async (item)=>{
     if(scanCancelled) return;
-    const entry=await (async()=>{
-      try{
-        const bars=await getHistBars(item.code, needed);
-        return {bars,cost50:bars.map(b=>b.cost50),cost75:bars.map(b=>b.cost75),cost90:bars.map(b=>b.cost90),zq1:bars.map(b=>b.zq1),zq:bars.map(b=>b.zq)};
-      }catch(e){ return null; }
-    })();
-    if(!entry) return;
-    let dates=null;
-    if(fromDate||toDate){ const hits=scanDateRange(entry, settings, fromDate, toDate); if(hits.length) dates=hits; }
-    else{ if(evalSelectionAt(entry, settings, entry.bars.length-1)) dates=[entry.bars[entry.bars.length-1].date]; }
-    if(dates){
-      const last=entry.bars[entry.bars.length-1]; const prev=entry.bars.length>=2?entry.bars[entry.bars.length-2]:null; const pct=prev?(last.close-prev.close)/prev.close*100:0;
-      matchRows.push({item,dates,pct,entry});
-      matchRows.sort((a,b)=>b.pct-a.pct);
-      resultsEl.innerHTML='';
-      matchRows.slice(0,MAX_ROWS).forEach(({item,dates,pct,entry})=>{
-        const div=document.createElement('div'); div.className='res-card';
-        div.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;">
-          <div><b>${item.name}</b> ${item.short} <span class="${pct>0?'up':pct<0?'down':'flat'}" style="margin-left:6px;">${pct>=0?'+':''}${pct.toFixed(2)}%</span> <span style="color:var(--dim);font-size:10px;">命中:${dates.join(',')}</span></div>
-          <div class="btn ghost" style="padding:4px 10px;">+自选</div>
-        </div>
-        <div style="display:flex;gap:8px;margin-top:6px;">
-          <canvas class="chart" style="height:90px;flex:1;"></canvas>
-          <canvas class="chart small" style="height:90px;flex:0.6;"></canvas>
-        </div>`;
-        const canvases=div.querySelectorAll('canvas');
-        drawMain(canvases[0], entry.bars.slice(-60), [entry.cost50.slice(-60),entry.cost75.slice(-60),entry.cost90.slice(-60)], null, null, false);
-        drawZQ(canvases[1], entry.zq1.slice(-60), entry.zq.slice(-60));
-        div.querySelector('.btn').onclick=()=>{
-          const store=loadWLStore(); const cat=store.active; if(!store.cats[cat].some(x=>x.code===item.code)){ store.cats[cat].unshift({code:item.code,name:item.name,short:item.short,type:'stock'}); saveWLStore(store); renderCatBar(); renderWatchlist(); }
-        };
-        div.onclick=(e)=>{ if(e.target.classList.contains('btn')) return; openDetail(item); };
-        resultsEl.appendChild(div);
-      });
-    }
+    try{
+      const bars=await getHistBars(item.code, needed);
+      const entry={bars,cost50:bars.map(b=>b.cost50),cost75:bars.map(b=>b.cost75),cost90:bars.map(b=>b.cost90),zq1:bars.map(b=>b.zq1),zq:bars.map(b=>b.zq)};
+      let dates=null;
+      if(fromDate||toDate){ const hits=scanDateRange(entry, settings, fromDate, toDate); if(hits.length) dates=hits; }
+      else{ if(evalSelectionAt(entry, settings, entry.bars.length-1)) dates=[entry.bars[entry.bars.length-1].date]; }
+      if(dates){
+        const last=entry.bars[entry.bars.length-1]; const prev=entry.bars.length>=2?entry.bars[entry.bars.length-2]:null; const pct=prev?(last.close-prev.close)/prev.close*100:0;
+        matchRows.push({item,dates,pct,entry});
+        matchRows.sort((a,b)=>b.pct-a.pct);
+        resultsEl.innerHTML='';
+        matchRows.slice(0,MAX_ROWS).forEach(({item,dates,pct,entry})=>{
+          const div=document.createElement('div'); div.className='res-card';
+          div.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;">
+            <div><b>${item.name}</b> ${item.short} <span class="${pct>0?'up':pct<0?'down':'flat'}" style="margin-left:6px;">${pct>=0?'+':''}${pct.toFixed(2)}%</span> <span style="color:var(--dim);font-size:10px;">命中:${dates.join(',')}</span></div>
+            <div class="btn ghost" style="padding:4px 10px;">+自选</div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:6px;">
+            <canvas class="chart" style="height:90px;flex:1;"></canvas>
+            <canvas class="chart small" style="height:90px;flex:0.6;"></canvas>
+          </div>`;
+          const canvases=div.querySelectorAll('canvas');
+          drawMain(canvases[0], entry.bars.slice(-60), [entry.cost50.slice(-60),entry.cost75.slice(-60),entry.cost90.slice(-60)], null, false);
+          drawZQ(canvases[1], entry.zq1.slice(-60), entry.zq.slice(-60));
+          div.querySelector('.btn').onclick=()=>{
+            const store=loadWLStore(); const cat=store.active; if(!store.cats[cat].some(x=>x.code===item.code)){ store.cats[cat].unshift({code:item.code,name:item.name,short:item.short,type:'stock'}); saveWLStore(store); renderCatBar(); renderWatchlist(); }
+          };
+          div.onclick=(e)=>{ if(e.target.classList.contains('btn')) return; openDetail(item); };
+          resultsEl.appendChild(div);
+        });
+      }
+    }catch(e){}
   }, 20, (done,total)=>{ progEl.textContent=`正在扫描 ${done}/${total}... 已找到${matchRows.length}只`; });
   document.getElementById('stop-scan-btn').style.display='none';
   if(matchRows.length===0) resultsEl.innerHTML='<div class="hint">没有符合条件的</div>';
