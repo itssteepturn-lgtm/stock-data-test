@@ -1,8 +1,6 @@
-name: Fetch Market Data
+name: Patch Self+Index to 28
 
 on:
-  schedule:
-    - cron: '40 7 * * 1-5'
   workflow_dispatch:
 
 concurrency:
@@ -10,33 +8,24 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  fetch:
+  patch:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-
-      - name: Install deps
-        run: |
-          pip install -r requirements.txt || pip install baostock pandas requests
-
-      - name: Run full market ONCE
-        run: |
-          python scripts/fetch_daily.py --full --once
-
-      - name: Commit all data once
+      - name: Install
+        run: pip install baostock pandas
+      - name: Patch self stocks + indices to 2026-09-28
+        run: python quick_patch_self.py
+      - name: Commit patch
         run: |
           git config user.name "data-bot"
           git config user.email "bot@github.com"
-          # 关键修复：先拉远端再推，避免10996红叉
-          git pull --rebase origin main || (git stash && git pull --rebase origin main && git stash pop || true)
-          git add -A
-          git commit -m "full market once $(date -u +%FT%TZ) 已完成5617/5617" || echo "no changes to commit"
+          git pull --rebase origin main || true
+          git add data/stocks/*.json data/indices/*.json || git add -A
+          git commit -m "patch self+index to 2026-09-28 留出今天" || echo "no changes"
           git push origin main || (git pull --rebase origin main && git push origin main)
