@@ -238,12 +238,28 @@ def main():
         return
 
     checkpoint = set()
+    checkpoint_raw = {}
     if resume_flag and CHECKPOINT_FILE.exists():
         try:
-            checkpoint = set(json.loads(CHECKPOINT_FILE.read_text()).get('done', []))
-            print(f"checkpoint loaded {len(checkpoint)} done")
+            checkpoint_raw = json.loads(CHECKPOINT_FILE.read_text())
+            checkpoint = set(checkpoint_raw.get('done', []))
+            upd_str = checkpoint_raw.get('updated','')
+            # 自动失效：如果checkpoint不是今天的，或已完成数接近全市场且最新交易日已变，自动清空，避免this run 0
+            try:
+                upd_date = upd_str[:10]
+                today_str = datetime.date.today().isoformat()
+                if upd_date != today_str:
+                    print(f"checkpoint是 {upd_date} 的，不是今天 {today_str}，自动清空，实现查缺补漏")
+                    checkpoint = set()
+                    checkpoint_raw = {}
+                    CHECKPOINT_FILE.unlink(missing_ok=True)
+                else:
+                    print(f"checkpoint loaded {len(checkpoint)} done from today {upd_date}")
+            except Exception as e:
+                print(f"checkpoint date parse fail {e}, 保留")
         except:
             checkpoint = set()
+            checkpoint_raw = {}
 
     latest_day = get_latest_trading_day()
     print(f"latest trading day {latest_day}")
@@ -256,7 +272,7 @@ def main():
 
     # 指数 + 日历
     all_index_dates = set()
-    for idx_code in ['sh.000001','sz.399001','sz.399006','sh.000688']:
+    for idx_code in ['sh.000001','sz.399001','sz.399006','bj.899050','sh.000680']:
         try:
             b = fetch_index_bars(idx_code, MAX_DAYS_KEPT+50)
             if b:
@@ -282,14 +298,17 @@ def main():
     except Exception as e:
         print(f"calendar write fail {e}")
 
-    # 预加载日历用于查缺
+    # 预加载日历用于查缺：150天全量 + 30天快速
+    expected_150 = set(calendar_dates) if calendar_dates else set()
     expected_30 = set(calendar_dates[-GAP_CHECK_DAYS:]) if len(calendar_dates)>=GAP_CHECK_DAYS else set()
 
     done_this_run = 0
     failed = []
     skipped_up_to_date = 0
+    deep_repair = 0
 
     for idx, code in enumerate(all_codes):
+        # checkpoint现在只用于当天断点续跑，已自动失效旧的，所以这里只跳过当天已跑过的
         if resume_flag and code in checkpoint:
             continue
         path = DATA_DIR / f"{code}.json"
@@ -304,22 +323,27 @@ def main():
             except:
                 existing = []
 
-        # 快速检查：已有150天且最后一天就是最新交易日，且最近30天无缺口 -> 跳过，实现每日快速
         if existing:
             existing_dates = set(b['date'] for b in existing)
             last_date = existing[-1]['date'] if existing else ''
-            # 检查最近30天缺口
-            missing_in_30 = [d for d in expected_30 if d not in existing_dates] if expected_30 else []
-            if last_date >= latest_day and not missing_in_30:
-                # 已经最新且无缺口，跳过计算，实现快速
+            # 全量150天缺口检查，修复像301390这种中间断档乱了的
+            missing_150 = [d for d in expected_150 if d not in existing_dates] if expected_150 else []
+            missing_30 = [d for d in expected_30 if d not in existing_dates] if expected_30 else []
+            # 如果已有少于100根，或150天里缺口>10，或最后30天缺口>0且最后一天不是最新，认为需要深补
+            if len(existing) < 100 or len(missing_150) > 10:
+                print(f"{code} 发现大缺口 150天缺{len(missing_150)} 已有{len(existing)} 深补150天 last={last_date}")
+                need_days = DEEP_SEED_DAYS
+                deep_repair += 1
+            elif last_date >= latest_day and not missing_30 and not missing_150:
                 skipped_up_to_date += 1
                 if skipped_up_to_date <= 5 or skipped_up_to_date % 500 == 0:
                     print(f"{code} up-to-date skip {last_date} missing0")
                 continue
-            # 否则需要补
-            if missing_in_30:
-                print(f"{code} 发现缺口 {missing_in_30} 需补")
-                need_days = max(GAP_CHECK_DAYS, TOPUP_DAYS+len(missing_in_30)+5)
+            elif missing_30:
+                print(f"{code} 发现缺口 {missing_30} 需补30天")
+                need_days = max(GAP_CHECK_DAYS, TOPUP_DAYS+len(missing_30)+5)
+            elif last_date < latest_day:
+                need_days = TOPUP_DAYS
             else:
                 need_days = TOPUP_DAYS
         else:
@@ -374,12 +398,12 @@ def main():
         "total": len(all_codes),
         "updated": len(checkpoint),
         "ranAt": datetime.datetime.now().isoformat(),
-        "note": f"查缺补漏版 已完成{len(checkpoint)}/{len(all_codes)} 本次更新{done_this_run} 跳过最新{skipped_up_to_date} 失败{len(failed)}只",
+        "note": f"查缺补漏版 已完成{len(checkpoint)}/{len(all_codes)} 本次更新{done_this_run} 跳过最新{skipped_up_to_date} 深补{deep_repair} 失败{len(failed)}只",
         "done": len(checkpoint),
         "resume": resume_flag,
         "failed": failed[:100]
     }, ensure_ascii=False))
-    print(f"run finished this run {done_this_run} skip {skipped_up_to_date} total done {len(checkpoint)}/{len(all_codes)} failed {len(failed)}")
+    print(f"run finished this run {done_this_run} skip {skipped_up_to_date} deep_repair {deep_repair} total done {len(checkpoint)}/{len(all_codes)} failed {len(failed)}")
 
 if __name__ == "__main__":
     main()
