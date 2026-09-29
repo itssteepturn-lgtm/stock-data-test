@@ -22,15 +22,15 @@ jobs:
         with:
           python-version: '3.10'
       - name: Install
-        run: pip install baostock pandas
-      - name: Patch self stocks + indices to 2026-09-28
+        run: pip install baostock
+      - name: Patch self stocks + indices to 2026-09-28 (baostock only)
         run: python quick_patch_self.py
       - name: Commit patch
         run: |
           git config user.name "data-bot"
           git config user.email "bot@github.com"
           git pull --rebase origin main || true
-          git add data/stocks/*.json data/indices/*.json || git add -A
+          git add data/stocks/*.json data/indices/*.json
           git status
-          git commit -m "patch self+index to 2026-09-28 留出今天" || echo "no changes"
+          git commit -m "patch self+index to 2026-09-28 baostock only 根基不动" || echo "no changes"
           git push origin main || (git pull --rebase origin main && git push origin main)
