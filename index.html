@@ -67,7 +67,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <meta name="robots" content="noindex, nofollow">
-<title>盘面 · 铁律纯后台2天碎片</title>
+<title>盘面 · 后台150天</title>
 <style>
   :root{--bg:#0d1117;--panel:#151b23;--line:#232b36;--text:#e6e9ef;--dim:#8891a0;--up:#e5484d;--down:#2ea567;--accent:#4a90e2;}
   *{box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
@@ -123,18 +123,18 @@
 <body>
 <div id="app">
   <header>
-    <h1>盘面 · 铁律纯后台2天碎片</h1>
+    <h1>盘面 · 后台150天</h1>
     <div id="clock">--:--:--</div>
   </header>
-  <div id="data-status" style="font-size:10px;color:var(--dim);margin:-8px 2px 12px;display:flex;justify-content:space-between;align-items:center;gap:8px;">
-    <span id="data-status-text">检查中…</span>
+  <div id="data-status" style="font-size:10px;color:var(--dim);margin:-8px 2px 12px;display:flex;justify-content:space-between;align-items:center;gap:8px;min-height:18px;height:18px;overflow:hidden;white-space:nowrap;contain:layout;">
+    <span id="data-status-text" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;line-height:18px;">检查中…</span>
     <span style="display:flex;gap:6px;align-items:center;">
       
       <span id="data-status-refresh" class="pill" style="padding:2px 8px;">Actions</span>
     </span>
   </div>
 
-  <div class="section-label"><span>指数 · 后台150天+当日实时K</span><span style="font-size:10px;color:var(--dim);">点进看分时+K+VOL+MACD</span></div>
+  <div class="section-label"><span>指数 · 后台150天</span><span style="font-size:10px;color:var(--dim);">点进看分时+K+VOL+MACD</span></div>
   <div id="idx-list"></div>
 
   <div class="section-label"><span>自选股 <span id="wl-count" style="color:var(--dim);"></span></span><span id="edit-toggle" class="pill">编辑</span></div>
@@ -186,7 +186,7 @@ const TEST_INDEXES=[
   {code:'1.000001',name:'上证指数',short:'000001',type:'index'},
   {code:'0.399001',name:'深证成指',short:'399001',type:'index'},
   {code:'0.399006',name:'创业板指',short:'399006',type:'index'},
-  {code:'1.000688',name:'科创50',short:'000688',type:'index'},
+  {code:'0.000680',name:'科创综指',short:'000680',type:'index'},
 ];
 setInterval(()=>{document.getElementById('clock').textContent=new Date().toLocaleTimeString();},1000);
 function codeToSecid(code){
@@ -256,23 +256,14 @@ function getTodayStr(){ const d=new Date(); const p=n=>String(n).padStart(2,'0')
 function getLatestNTradingDates(n){
   if(!TRADING_CALENDAR || TRADING_CALENDAR.length<n) return null;
   let cal = TRADING_CALENDAR.slice(-200);
-  const today = getTodayStr();
-  // 纯后台+2天碎片：若日历最后一天 < 今天且今天是交易日，虚拟追加今天用于提示缺口
-  if(isWeekdayTradingDay(today) && cal[cal.length-1] < today){
-    return [...cal.slice(-(n-1)), today];
-  }
   return cal.slice(-n);
 }
+
 function getLatestTradingDate(){
-  const today = getTodayStr();
-  // 纯后台：日历最后一天 < 今天且是交易日时，返回今天作为虚拟最新交易日，用于2天碎片占位
-  if(TRADING_CALENDAR && TRADING_CALENDAR.length){
-    const last = TRADING_CALENDAR[TRADING_CALENDAR.length-1];
-    if(isWeekdayTradingDay(today) && last < today) return today;
-    return last;
-  }
-  return today;
+  if(TRADING_CALENDAR && TRADING_CALENDAR.length) return TRADING_CALENDAR[TRADING_CALENDAR.length-1];
+  return null;
 }
+
 
 async function getFullHistory(secid, limit=150){
   const code=secid.split('.')[1];
@@ -290,63 +281,7 @@ async function getFullHistory(secid, limit=150){
   }));
 }
 
-function buildRealtimeTodayUrls(){const t=Date.now();return [`./data/realtime/today.json?t=${t}`,`https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/realtime/today.json?t=${t}`,`https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/realtime/today.json?t=${t}`];}
-let REALTIME_TODAY_MAP=null;
-let REALTIME_TODAY_PROMISE=null;
-async function loadRealtimeTodayMap(){
-  if(REALTIME_TODAY_MAP) return REALTIME_TODAY_MAP;
-  if(REALTIME_TODAY_PROMISE) return REALTIME_TODAY_PROMISE;
-  REALTIME_TODAY_PROMISE=async function checkDataStatus(){
-  const el=document.getElementById('data-status-text');
-  el.textContent='后台150天+2天碎片 纯后台 · data/*.json';
-  try{
-    const meta=await fetchJsonWithFallback(buildMetaUrls(),3500);
-    const timeStr=meta.ranAt?new Date(meta.ranAt).toLocaleString():'--';
-    el.textContent=`${timeStr} 后台${meta.total}只 已存${meta.updated}只 ${meta.note||''}`;
-  }catch(e){}
-}
 
-(async()=>{
-    try{
-      const j=await fetchJsonWithFallback(buildRealtimeTodayUrls(),2500);
-      const map={};
-      // 支持 {code:bar} 或 {bars:[{code,...}]} 或直接数组
-      let list=[];
-      if(Array.isArray(j)) list=j;
-      else if(j.bars && Array.isArray(j.bars)) list=j.bars;
-      else if(j.stocks && Array.isArray(j.stocks)) list=j.stocks;
-      else if(typeof j==='object') list=Object.values(j);
-      list.forEach(it=>{
-        if(!it) return;
-        const shortCode = it.code || it.short || it.stock_code;
-        if(!shortCode) return;
-        const secid = it.secid || codeToSecid(shortCode) || shortCode;
-        if(shortCode) map[shortCode]=it;
-        if(secid) map[secid]=it;
-        // 6位也存一份
-        if(shortCode && shortCode.length>=6){
-          const six = shortCode.slice(-6);
-          map[six]=it;
-        }
-      });
-      REALTIME_TODAY_MAP=map;
-      return map;
-    }catch(e){
-      REALTIME_TODAY_MAP={};
-      return {};
-    }finally{
-      REALTIME_TODAY_PROMISE=null;
-    }
-  })();
-  return REALTIME_TODAY_PROMISE;
-}
-async function getBackendRealtimeBar(secid){
-  try{
-    const map=await loadRealtimeTodayMap();
-    if(!map) return null;
-    return map[secid] || map[secid.split('.')[1]] || null;
-  }catch(e){ return null; }
-}
 
 const histCache={};
 async function getHistBars(secid, limit){
@@ -480,7 +415,7 @@ function getLimitPct(secid){
   const code=secid.split('.')[1];
   if(code.startsWith('30')||code.startsWith('688')) return 20;
   if(code.startsWith('8')||code.startsWith('4')) return 30;
-  if(code==='000001'||code==='399001'||code==='399006'||code==='000688') return 10;
+  if(code==='000001'||code==='399001'||code==='399006'||code==='000680'||code==='000688') return 10;
   return 10;
 }
 function drawIntra(canvas, trends, prevClose, secid){
@@ -537,37 +472,9 @@ async function fillRowQuote(item, row, isUpdating=false){
   if(isUpdating) row.classList.add('updating');
   else { row.classList.add('updating'); setTimeout(()=>row.classList.remove('updating'), 800); }
   try{
-    const bars=await getHistBars(item.code,60);
+    const bars=await getHistBars(item.code,20);
     if(!bars.length) throw new Error('no bars');
-    // 纯后台：不再调用任何前端实时接口，仅从后台 data/stocks + data/realtime/today.json 合并
-    const realtimeBar = await getBackendRealtimeBar(item.code);
-    let merged=bars.slice();
-    if(realtimeBar && realtimeBar.date){
-      const today=todayStrLocal();
-      // realtimeBar 可能是 {date,open,high,low,close,vol,...} 或嵌套
-      const rb = realtimeBar.bar || realtimeBar.latest || realtimeBar;
-      if(rb && rb.close){
-        const isSameDay = merged.length && merged[merged.length-1].date===rb.date;
-        const liveBar = {
-          date: rb.date || today,
-          open: rb.open ?? merged[merged.length-1].close,
-          close: rb.close,
-          high: rb.high ?? rb.close,
-          low: rb.low ?? rb.close,
-          vol: rb.vol ?? 0,
-          amount: rb.amount ?? 0,
-          turnover: rb.turnover ?? 0,
-          cost50: merged[merged.length-1]?.cost50,
-          cost75: merged[merged.length-1]?.cost75,
-          cost90: merged[merged.length-1]?.cost90,
-          zq1: merged[merged.length-1]?.zq1,
-          zq: merged[merged.length-1]?.zq,
-          _live: !!rb.simulated || rb.vol===0
-        };
-        if(isSameDay){ merged[merged.length-1]= {...merged[merged.length-1], ...liveBar}; }
-        else { merged.push(liveBar); if(merged.length>60) merged=merged.slice(-60); }
-      }
-    }
+    let merged=bars.slice(-20);
     let last=merged[merged.length-1];
     let prev=merged.length>=2?merged[merged.length-2]:null;
     let pct=prev?(last.close-prev.close)/prev.close*100:0;
@@ -580,6 +487,7 @@ async function fillRowQuote(item, row, isUpdating=false){
   }catch(e){ const priceEl=row.querySelector('.p'); if(priceEl) priceEl.textContent='无数据'; const pctEl=row.querySelector('.pct'); if(pctEl) pctEl.textContent=e.message.slice(0,12); row._pct=-999; }
   finally{ setTimeout(()=>row.classList.remove('updating'), 600); }
 }
+
 
 
 // ---- 自选股分类 ----
@@ -669,25 +577,13 @@ async function loadDetail(){
   const isIndex=TEST_INDEXES.some(x=>x.code===item.code);
   try{
     const bars=await getHistBars(item.code, 150);
-    // 纯后台：不再请求任何前端实时或分时接口
-    const realtimeBar = await getBackendRealtimeBar(item.code);
     let merged=bars.slice();
-    if(realtimeBar){
-      const rb = realtimeBar.bar || realtimeBar.latest || realtimeBar;
-      if(rb && rb.date && rb.close){
-        const isSameDay = merged.length && merged[merged.length-1].date===rb.date;
-        const liveBar={date:rb.date, open:rb.open??rb.close, close:rb.close, high:rb.high??rb.close, low:rb.low??rb.close, vol:rb.vol??0, amount:rb.amount??0, cost50:merged[merged.length-1]?.cost50, cost75:merged[merged.length-1]?.cost75, cost90:merged[merged.length-1]?.cost90, zq1:merged[merged.length-1]?.zq1, zq:merged[merged.length-1]?.zq, _live:true};
-        if(isSameDay){ merged[merged.length-1]= {...merged[merged.length-1], ...liveBar}; }
-        else { merged.push(liveBar); if(merged.length>150) merged=merged.slice(-150); }
-      }
-    }
     detailState.bars=merged;
     const last=merged[merged.length-1];
     const prev=merged.length>=2?merged[merged.length-2]:null;
     let pct=prev?(last.close-prev.close)/prev.close*100:0;
     metaEl.textContent=`${last.date}  ${last.open.toFixed(2)}/${last.high.toFixed(2)}/${last.low.toFixed(2)}/${last.close.toFixed(2)}  量${(last.vol||0).toFixed(0)}`;
     priceEl.innerHTML=`<span>现价 <b class="${pct>=0?'up':'down'}">${last.close.toFixed(2)}</b></span><span>涨跌 <b class="${pct>=0?'up':'down'}">${pct>=0?'+':''}${pct.toFixed(2)}%</b></span><span>昨收 ${prev?prev.close.toFixed(2):'--'}</span>`;
-
     const costEl=document.getElementById('detail-cost');
     const zqEl=document.getElementById('detail-zq');
     if(isIndex){
@@ -697,8 +593,6 @@ async function loadDetail(){
       costEl.innerHTML=`<span style="color:${COST_COLORS[50]}">cost50 <b style="color:${COST_COLORS[50]}">${last.cost50?last.cost50.toFixed(2):'--'}</b></span><span style="color:${COST_COLORS[75]}">cost75 <b style="color:${COST_COLORS[75]}">${last.cost75?last.cost75.toFixed(2):'--'}</b></span><span style="color:${COST_COLORS[90]}">cost90 <b style="color:${COST_COLORS[90]}">${last.cost90?last.cost90.toFixed(2):'--'}</b></span>`;
       zqEl.innerHTML=`<span style="color:#4a90e2">zq1 <b style="color:#4a90e2">${last.zq1!=null?last.zq1.toFixed(1)+'%':'--'}</b></span><span style="color:#c46be0">zq <b style="color:#c46be0">${last.zq!=null?last.zq.toFixed(1)+'%':'--'}</b></span><span>昨收 ${prev?prev.close.toFixed(2):'--'}</span>`;
     }
-
-    // 详情页60根也按交易日历对齐，缺口留白，不靠单只指数
     let calendar60 = getLatestNTradingDates(60);
     let toShow, sliceCost, toShowCloses;
     let detailMissingInfo = '';
@@ -711,48 +605,22 @@ async function loadDetail(){
         const latestCal = calendar60[calendar60.length-1];
         detailMissingInfo = lastDate!==latestCal ? `缺最新 ${latestCal} 共缺${miss}天` : `中间停牌/缺数据 ${miss}天`;
       }
-      // cost线对齐
-      if(isIndex){
-        sliceCost=[];
-      }else{
-        sliceCost = [
-          toShow.map(b=>b?b.cost50:null),
-          toShow.map(b=>b?b.cost75:null),
-          toShow.map(b=>b?b.cost90:null)
-        ];
-      }
+      if(isIndex){ sliceCost=[]; }else{ sliceCost = [toShow.map(b=>b?b.cost50:null), toShow.map(b=>b?b.cost75:null), toShow.map(b=>b?b.cost90:null)]; }
       toShowCloses = toShow.map(b=>b?b.close:null);
     }else{
-      // fallback 旧逻辑
       toShow = merged.slice(-60);
       sliceCost = isIndex?[]:[merged.map(b=>b.cost50).slice(-60), merged.map(b=>b.cost75).slice(-60), merged.map(b=>b.cost90).slice(-60)];
       toShowCloses = toShow.map(b=>b.close);
     }
-
-    // 计算MACD基于有效收盘
     const validCloses = toShowCloses.filter(v=>v!=null);
     const macd=calcMACD(validCloses.length?validCloses:merged.map(b=>b.close));
-    // 为了让MACD也能对齐，补null到60长度
     let macdDif, macdDea, macdHist;
     if(calendar60 && toShow.length===60){
-      // 简单处理：MACD按有效序列算，然后映射回日历位置（有K线的才有值）
-      const macdMap={};
-      let vi=0;
-      toShow.forEach((b,i)=>{
-        if(b){
-          macdMap[i]=vi;
-          vi++;
-        }
-      });
+      const macdMap={}; let vi=0; toShow.forEach((b,i)=>{ if(b){ macdMap[i]=vi; vi++; } });
       macdDif = toShow.map((_,i)=> macdMap[i]!=null ? macd.dif[macdMap[i]] : null);
       macdDea = toShow.map((_,i)=> macdMap[i]!=null ? macd.dea[macdMap[i]] : null);
       macdHist = toShow.map((_,i)=> macdMap[i]!=null ? macd.macd[macdMap[i]] : null);
-    }else{
-      macdDif = macd.dif.slice(-60);
-      macdDea = macd.dea.slice(-60);
-      macdHist = macd.macd.slice(-60);
-    }
-
+    }else{ macdDif = macd.dif.slice(-60); macdDea = macd.dea.slice(-60); macdHist = macd.macd.slice(-60); }
     drawMain(document.getElementById('chart-main'), toShow, sliceCost, detailState.cursorIdx, isIndex);
     if(isIndex){
       document.getElementById('chart-sub').style.display='none';
@@ -761,19 +629,15 @@ async function loadDetail(){
       document.getElementById('chart-sub').style.display='block';
       drawZQ(document.getElementById('chart-sub'), toShow.map(b=>b?b.zq1:null), toShow.map(b=>b?b.zq:null), detailState.cursorIdx);
       const zqBase = document.getElementById('detail-zq');
-      if(detailMissingInfo){
-        zqBase.innerHTML += ` <span style="color:#e5484d">⚠️ ${detailMissingInfo}</span>`;
-      }
+      if(detailMissingInfo){ zqBase.innerHTML += ` <span style="color:#e5484d">⚠️ ${detailMissingInfo}</span>`; }
     }
-    // 纯后台：分时图不再请求，显示“后台无分时”
     drawIntra(document.getElementById('chart-intra'), [], last.close, item.code);
     drawVOL(document.getElementById('chart-vol'), toShow, detailState.cursorIdx);
     drawMACD(document.getElementById('chart-macd'), macdDif, macdDea, macdHist, detailState.cursorIdx);
-    if(detailMissingInfo){
-      metaEl.innerHTML += ` <span style="color:#e5484d">⚠️ ${detailMissingInfo}</span>`;
-    }
+    if(detailMissingInfo){ metaEl.innerHTML += ` <span style="color:#e5484d">⚠️ ${detailMissingInfo}</span>`; }
   }catch(e){ metaEl.textContent='加载失败 '+e.message; }
 }
+
 
 document.getElementById('chart-main').onclick=(e)=>{
   const canvas=e.target; const rect=canvas.getBoundingClientRect(); const x=e.clientX-rect.left;
@@ -957,13 +821,14 @@ document.getElementById('run-backtest-btn').onclick=async()=>{
 
 async function checkDataStatus(){
   const el=document.getElementById('data-status-text');
-  el.textContent='后台150天+2天碎片 纯后台 · data/*.json';
+  el.textContent='后台150天 纯后台 · data/*.json';
   try{
     const meta=await fetchJsonWithFallback(buildMetaUrls(),3500);
     const timeStr=meta.ranAt?new Date(meta.ranAt).toLocaleString():'--';
     el.textContent=`${timeStr} 后台${meta.total}只 已存${meta.updated}只 ${meta.note||''}`;
   }catch(e){}
 }
+
 
 (async()=>{ await loadTradingCalendar(); renderCatBar(); renderIndexList(); renderWatchlist(); checkDataStatus(); })();
 </script>
