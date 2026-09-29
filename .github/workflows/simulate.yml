@@ -1,4 +1,4 @@
-name: Simulate Today Fragments
+name: Simulate Today Fragments - Backend Only
 
 on:
   workflow_dispatch:
@@ -23,7 +23,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      - name: Simulate today.json (even if 2 days missing)
+      - name: Simulate today.json backend only
         run: python simulate_today.py
       - name: Commit today.json
         run: |
@@ -32,5 +32,5 @@ jobs:
           git pull --rebase origin main || true
           git add data/realtime/today.json
           git status
-          git commit -m "simulate today fragments $(date -u +%H:%M)" || echo "no changes"
+          git commit -m "simulate today fragments backend-only $(date -u +%H:%M)" || echo "no changes"
           git push origin main || (git pull --rebase origin main && git push origin main)

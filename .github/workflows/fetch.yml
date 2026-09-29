@@ -1,4 +1,4 @@
-name: Patch Self+Index to 28
+name: Patch Self+Index Backend Only
 
 on:
   workflow_dispatch:
@@ -21,9 +21,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.10'
-      - name: Install
+      - name: Install baostock only
         run: pip install baostock
-      - name: Patch self stocks + indices to 2026-09-28 (baostock only)
+      - name: Patch self stocks + indices backend only
         run: python quick_patch_self.py
       - name: Commit patch
         run: |
@@ -32,5 +32,5 @@ jobs:
           git pull --rebase origin main || true
           git add data/stocks/*.json data/indices/*.json
           git status
-          git commit -m "patch self+index to 2026-09-28 baostock only 根基不动" || echo "no changes"
+          git commit -m "patch backend only" || echo "no changes"
           git push origin main || (git pull --rebase origin main && git push origin main)
