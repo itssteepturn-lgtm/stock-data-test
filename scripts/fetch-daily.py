@@ -261,6 +261,21 @@ def main():
             checkpoint = set()
             checkpoint_raw = {}
 
+    # 强制：如果checkpoint是今天的但数量已满5618，且最新交易日是昨天，说明上次是空跑（this run 0），这次必须清空重跑，否则永远0
+    if checkpoint and len(checkpoint) >= 5500:
+        # 检查一个样本股是否已最新，如果样本股缺最新，说明checkpoint是假完成，清空
+        try:
+            sample_path = DATA_DIR / "600000.json"
+            if sample_path.exists():
+                sj = json.loads(sample_path.read_text())
+                sbars = sj.get('bars', []) if isinstance(sj, dict) else sj
+                if sbars and sbars[-1]['date'] < get_latest_trading_day():
+                    print(f"checkpoint虽是今天但样本股600000最后{sbars[-1]['date']} < 最新{get_latest_trading_day()}，判定为空跑，清空checkpoint")
+                    checkpoint = set()
+                    CHECKPOINT_FILE.unlink(missing_ok=True)
+        except Exception as e:
+            print(f"sample check fail {e}")
+
     latest_day = get_latest_trading_day()
     print(f"latest trading day {latest_day}")
 
@@ -272,7 +287,7 @@ def main():
 
     # 指数 + 日历
     all_index_dates = set()
-    for idx_code in ['sh.000001','sz.399001','sz.399006','bj.899050','sh.000680']:
+    for idx_code in ['sh.000001','sz.399001','sz.399006','bj.899050','sh.899050','sh.000680','sz.000680']:
         try:
             b = fetch_index_bars(idx_code, MAX_DAYS_KEPT+50)
             if b:
@@ -308,9 +323,14 @@ def main():
     deep_repair = 0
 
     for idx, code in enumerate(all_codes):
-        # checkpoint现在只用于当天断点续跑，已自动失效旧的，所以这里只跳过当天已跑过的
+        # checkpoint只用于记录本次已跑的，避免崩溃重跑重复，已有文件是否最新由下面的up-to-date逻辑判断，不再直接continue跳过
+        # 旧的checkpoint即使是今天的，只要文件缺最新，也要重新补，所以这里不直接跳过
+        pass_check = False
         if resume_flag and code in checkpoint:
-            continue
+            # 如果文件已存在且已最新，才跳过，否则仍要检查缺口
+            # 先加载existing判断，checkpoint仅作为快速标记
+            pass_check = True
+
         path = DATA_DIR / f"{code}.json"
         existing = []
         if path.exists():
