@@ -115,8 +115,6 @@ INDICES_DIR.mkdir(parents=True, exist_ok=True)
 MAX_DAYS_KEPT = 150
 DEEP_SEED_DAYS = 150
 TOPUP_DAYS = 10
-BATCH_SIZE = 500
-TIME_BUDGET_SECONDS = 38*60  # 45分钟一次，留7分钟给提交，卡顿就过
 
 def bs_code(code):
     if code.startswith('6') or code.startswith('5') or code.startswith('9') or code.startswith('688'):
@@ -125,7 +123,6 @@ def bs_code(code):
         return "sz."+code
 
 def get_all_a_codes():
-    # 周日/节假日当天query_all_stock会返回0，改为向前回溯10天找交易日，且只留status=1
     for offset in range(0, 10):
         day = (datetime.date.today() - timedelta(days=offset)).strftime("%Y-%m-%d")
         try:
@@ -133,19 +130,17 @@ def get_all_a_codes():
             codes=[]
             while (rs.error_code=='0') & rs.next():
                 row = rs.get_row_data()
-                # row[0]= sh.600000, row[1]= 1/0  1=上市 0=退市
                 if len(row) < 2:
                     continue
                 status = row[1]
                 if status != '1':
-                    continue  # 只留上市的，过滤退市
+                    continue
                 code_full = row[0]
                 if '.' not in code_full:
                     continue
                 code = code_full.split('.')[1]
                 if len(code)!=6 or not code.isdigit():
                     continue
-                # 再过滤：只留A股常见开头 0,3,6,8,30,68 避免B股等
                 if not (code.startswith('0') or code.startswith('3') or code.startswith('6') or code.startswith('8')):
                     continue
                 codes.append(code)
@@ -156,8 +151,6 @@ def get_all_a_codes():
         except Exception as e:
             print(f"query_all_stock {day} fail {e}")
             continue
-
-    # 兜底：读本地stock_list.json
     if STOCK_LIST_FILE.exists():
         try:
             j = json.loads(STOCK_LIST_FILE.read_text())
@@ -168,7 +161,6 @@ def get_all_a_codes():
                 return codes
         except Exception as e:
             print(f"local stock_list fallback fail {e}")
-
     print("all fallbacks failed, return empty")
     return []
 
@@ -177,7 +169,7 @@ def fetch_bars(code, days):
     start = (datetime.date.today() - timedelta(days=days)).strftime("%Y-%m-%d")
     try:
         rs = bs.query_history_k_data_plus(bs_code(code),
-            "date,open,high,low,close,volume,amount,turn",
+            "date,open,high,low,close,volume,amount,turn",  # 8字段铁律
             start_date=start, end_date=end, frequency="d", adjustflag="2")
         bars=[]
         while (rs.error_code=='0') & rs.next():
@@ -204,7 +196,7 @@ def fetch_index_bars(bs_code_str, days):
     end = datetime.date.today().strftime("%Y-%m-%d")
     start = (datetime.date.today() - timedelta(days=days)).strftime("%Y-%m-%d")
     rs = bs.query_history_k_data_plus(bs_code_str,
-        "date,open,high,low,close,volume,amount",
+        "date,open,high,low,close,volume,amount",  # 7字段 不含turn
         start_date=start, end_date=end, frequency="d", adjustflag="2")
     bars=[]
     while (rs.error_code=='0') & rs.next():
@@ -226,15 +218,14 @@ def fetch_index_bars(bs_code_str, days):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--resume', type=str, default='true', help='true=断点续跑查缺补漏 false=全清理重跑')
+    parser.add_argument('--resume', type=str, default='true')
     args = parser.parse_args()
     resume_flag = args.resume.lower() not in ('false','0','no')
-    print(f"resume={resume_flag}")
+    print(f"resume={resume_flag} 模式=全市场一次性全采集(无500分批/无38分钟预算)")
 
-    if not resume_flag:
-        if CHECKPOINT_FILE.exists():
-            CHECKPOINT_FILE.unlink()
-            print("checkpoint 已清理，全量重跑")
+    if not resume_flag and CHECKPOINT_FILE.exists():
+        CHECKPOINT_FILE.unlink()
+        print("checkpoint 已清理，全量重跑")
 
     lg = bs.login()
     if lg.error_code!='0':
@@ -252,11 +243,10 @@ def main():
     all_codes = get_all_a_codes()
     print(f"全市场 {len(all_codes)} 只，已完成 {len(checkpoint)} 只")
 
-    # 保存 stock_list.json 供前端
     stock_list = [{"code": bs_code(c), "name": c, "short": c, "type": "stock"} for c in all_codes]
     STOCK_LIST_FILE.write_text(json.dumps(stock_list, ensure_ascii=False), encoding='utf-8')
 
-    # 指数150天
+    # 指数150天 - 只存bars，不算cost/zq
     for idx_code in ['sh.000001','sz.399001','sz.399006','sh.000688']:
         try:
             b = fetch_index_bars(idx_code, MAX_DAYS_KEPT)
@@ -268,14 +258,12 @@ def main():
         except Exception as e:
             print(f"index {idx_code} err {e}")
 
-    start_ts = time.time()
     done_this_run = 0
-    batch_done = 0
+    failed = []
 
     for idx, code in enumerate(all_codes):
         if resume_flag and code in checkpoint:
             continue
-        # 查缺补漏：文件不存在或太小就重跑
         path = DATA_DIR / f"{code}.json"
         if resume_flag and path.exists():
             try:
@@ -286,10 +274,6 @@ def main():
                     continue
             except:
                 pass
-
-        if time.time()-start_ts > TIME_BUDGET_SECONDS:
-            print("time budget 38min hit, save checkpoint and exit, next 45min task will continue")
-            break
 
         existing = []
         if resume_flag and path.exists():
@@ -303,11 +287,11 @@ def main():
                 existing = []
 
         need_days = TOPUP_DAYS if existing else DEEP_SEED_DAYS
-        # 卡顿就过：加try，单只失败不卡全流程
         try:
             new_bars = fetch_bars(code, need_days)
         except Exception as e:
             print(f"{code} fetch fail skip {e}")
+            failed.append(code)
             continue
 
         by_date = {b['date']: b for b in existing}
@@ -322,6 +306,7 @@ def main():
             indicators, _ = compute_indicator_series(merged)
         except Exception as e:
             print(f"{code} compute fail skip {e}")
+            failed.append(code)
             continue
 
         enriched = []
@@ -337,14 +322,12 @@ def main():
 
         checkpoint.add(code)
         done_this_run += 1
-        batch_done += 1
-        print(f"{code} ok {len(enriched)} done {len(checkpoint)}/{len(all_codes)}")
-
-        # 500一组一提交：由workflow里每500只后commit，这里只打日志
-        if batch_done >= BATCH_SIZE:
-            print(f"batch {BATCH_SIZE} reached, save checkpoint")
+        if (idx+1) % 100 == 0:
+            print(f"progress {idx+1}/{len(all_codes)} done_this_run {done_this_run} checkpoint {len(checkpoint)}")
             CHECKPOINT_FILE.write_text(json.dumps({"done": sorted(list(checkpoint)), "updated": datetime.datetime.now().isoformat()}, ensure_ascii=False), encoding='utf-8')
-            batch_done = 0
+        else:
+            if done_this_run <= 10 or done_this_run % 50 == 0:
+                print(f"{code} ok {len(enriched)} done {len(checkpoint)}/{len(all_codes)}")
 
     CHECKPOINT_FILE.write_text(json.dumps({"done": sorted(list(checkpoint)), "updated": datetime.datetime.now().isoformat()}, ensure_ascii=False), encoding='utf-8')
     bs.logout()
@@ -353,11 +336,12 @@ def main():
         "total": len(all_codes),
         "updated": len(checkpoint),
         "ranAt": datetime.datetime.now().isoformat(),
-        "note": f"全市场正式版 150天 500一组 38分钟预算 断点续跑={resume_flag} 已完成{len(checkpoint)}/{len(all_codes)}",
+        "note": f"全市场正式版 150天 一次性全采集 已完成{len(checkpoint)}/{len(all_codes)} 失败{len(failed)}只",
         "done": len(checkpoint),
-        "resume": resume_flag
+        "resume": resume_flag,
+        "failed": failed[:100]
     }, ensure_ascii=False))
-    print(f"run finished this run {done_this_run} total done {len(checkpoint)}/{len(all_codes)}")
+    print(f"run finished this run {done_this_run} total done {len(checkpoint)}/{len(all_codes)} failed {len(failed)}")
 
 if __name__ == "__main__":
     main()
