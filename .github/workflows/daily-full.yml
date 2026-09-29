@@ -1,13 +1,8 @@
-name: daily-full
+name: daily-full-market-once
 on:
   schedule:
+    # 北京 01:00 跑一次，一次性全市场，不再分45分钟多次
     - cron: '0 17 * * *'
-    - cron: '45 17 * * *'
-    - cron: '30 18 * * *'
-    - cron: '15 19 * * *'
-    - cron: '0 20 * * *'
-    - cron: '45 20 * * *'
-    - cron: '30 21 * * *'
   workflow_dispatch:
     inputs:
       resume:
@@ -20,12 +15,13 @@ on:
           - 'false'
 
 concurrency:
-  group: fetch-full-market
+  group: fetch-full-market-once
   cancel-in-progress: false
 
 jobs:
   fetch:
     runs-on: ubuntu-latest
+    timeout-minutes: 360
     permissions:
       contents: write
     steps:
@@ -37,14 +33,14 @@ jobs:
           python-version: '3.11'
       - name: Install deps
         run: pip install baostock
-      - name: Run full market 500 batch 38min budget checkpoint
+      - name: Run full market ONCE (all codes in one run)
         run: |
           RESUME="${{ github.event.inputs.resume || 'true' }}"
           python scripts/fetch-daily.py --resume $RESUME
-      - name: Commit per batch
+      - name: Commit all data once
         run: |
           git config user.name "data-bot"
           git config user.email "bot@test.com"
           git add data/
-          git diff --cached --quiet || git commit -m "full 500 batch resume=${{ github.event.inputs.resume || 'true' }} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git diff --cached --quiet || git commit -m "full market once $(date -u +%Y-%m-%dT%H:%M:%SZ) $(cat data/meta.json | python3 -c 'import json,sys;print(json.load(sys.stdin).get("note",""))')"
           git push
