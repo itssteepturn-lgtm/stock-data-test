@@ -186,7 +186,7 @@ const TEST_INDEXES=[
   {code:'1.000001',name:'上证指数',short:'000001',type:'index'},
   {code:'0.399001',name:'深证成指',short:'399001',type:'index'},
   {code:'0.399006',name:'创业板指',short:'399006',type:'index'},
-  {code:'0.000680',name:'科创综指',short:'000680',type:'index'},
+  {code:'1.000680',name:'科创综指',short:'000680',type:'index'},
 ];
 setInterval(()=>{document.getElementById('clock').textContent=new Date().toLocaleTimeString();},1000);
 function codeToSecid(code){
@@ -265,15 +265,15 @@ function getLatestTradingDate(){
 }
 
 
-async function getFullHistory(secid, limit=150){
+async function getFullHistory(secid){
   const code=secid.split('.')[1];
-  const isIndex=TEST_INDEXES.some(x=>x.code===secid); // 修复000001冲突：必须用完整secid判断，0.000001是股票，1.000001是指数
+  const isIndex=TEST_INDEXES.some(x=>x.code===secid); // 修复000001冲突：必须用完整secid判断，0.000001是股票，1.000001是指数；000680同理 1.000680是指数，0.000680是股票
   const urls=isIndex?buildIndexUrls(code):buildStockUrls(code);
   const j=await fetchJsonWithFallback(urls,3500);
   const raw=j.bars||j;
   if(!raw||raw.length<1) throw new Error('后台无 '+code);
   const bars=Array.isArray(raw)?raw:(raw.bars||[]);
-  return bars.slice(-Math.min(limit,150)).map(b=>({
+  return bars.slice(-150).map(b=>({
     date:b.date,open:b.open,close:b.close,high:b.high,low:b.low,vol:b.vol||0,amount:b.amount||0,turnover:b.turnover||0,
     avg:b.avg||(b.amount&&b.vol?b.amount/(b.vol*100):b.close),
     cost50:b.cost50,cost75:b.cost75,cost90:b.cost90,zq1:b.zq1,zq:b.zq,vwma10:b.vwma10,
@@ -282,14 +282,15 @@ async function getFullHistory(secid, limit=150){
 }
 
 
-
 const histCache={};
 async function getHistBars(secid, limit){
-  if(histCache[secid]) return JSON.parse(JSON.stringify(histCache[secid])).slice(-Math.min(limit,150));
-  const bars=await getFullHistory(secid, limit);
-  histCache[secid]=bars;
-  return JSON.parse(JSON.stringify(bars)).slice(-Math.min(limit,150));
+  if(!histCache[secid]){
+    const bars=await getFullHistory(secid);
+    histCache[secid]=bars;
+  }
+  return JSON.parse(JSON.stringify(histCache[secid])).slice(-Math.min(limit,150));
 }
+
 
 function calcMACD(closes){
   const ema=(arr,period)=>{
