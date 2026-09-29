@@ -56,11 +56,11 @@ canvas.chart.main{height:260px} canvas.chart.zq{height:105px} canvas.chart.vol{h
 <div id="app">
 <header><h1>盘面 · 铁律纯后台</h1><div id="clock">--:--:--</div></header>
 <div id="data-status" style="font-size:10px;color:var(--dim);margin:-8px 2px 12px;display:flex;justify-content:space-between;">
-<span id="data-status-text">纯后台+碎片模式 已删前端</span><span id="src-toggle" class="pill active">后台+碎片</span>
+<span id="data-status-text">纯后台+碎片模式 已删前端 0东财0腾讯</span><span id="src-toggle" class="pill active">后台+碎片</span>
 </div>
 <div class="section-label">指数 · 后台150天+today.json碎片</div>
 <div id="idx-list"></div>
-<div class="section-label">自选股</div>
+<div class="section-label">自选股 · 全市场碎片</div>
 <div id="watch-list"></div>
 <div id="detail"><div id="detail-inner">
 <div class="detail-head"><div class="back" id="detail-back">‹</div><div class="title" id="detail-title">--</div></div>
@@ -79,7 +79,6 @@ const TEST_INDEXES=[
   {code:'0.399006',name:'创业板指',short:'399006',type:'index'},
   {code:'1.000688',name:'科创50',short:'000688',type:'index'},
 ];
-// 铁律：前端东财腾讯代码已彻底删除，0行残留
 const BACKEND_ONLY_TEST = true;
 function chipModelCompute(bars){
   if(!bars||!bars.length) return {cost50:[],cost75:[],cost90:[],zq1:[],zq:[],vwma10:[]};
@@ -109,32 +108,15 @@ function enrichBarsWithChip(bars){
   return bars.map((b,i)=>({ ...b, avg: b.avg!=null ? b.avg : (b.amount && b.vol ? b.amount/(b.vol*100) : b.close), cost50:ind.cost50[i], cost75:ind.cost75[i], cost90:ind.cost90[i], zq1:ind.zq1[i], zq:ind.zq[i], vwma10:ind.vwma10[i] }));
 }
 setInterval(()=>{document.getElementById('clock').textContent=new Date().toLocaleTimeString();},1000);
-function codeToSecid(code){
-  if(/^(6|9)/.test(code)) return '1.'+code;
-  if(/^(0|2|3)/.test(code)) return '0.'+code;
-  return null;
-}
+function codeToSecid(code){ if(/^(6|9)/.test(code)) return '1.'+code; if(/^(0|2|3)/.test(code)) return '0.'+code; return null; }
 function todayStrLocal(){const d=new Date();const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;}
-function buildStockUrls(code){
-  const t=Date.now();
-  return [`./data/stocks/${code}.json?t=${t}`,`https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/stocks/${code}.json?t=${t}`,`https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/stocks/${code}.json?t=${t}`];
-}
-function buildIndexUrls(code){
-  const t=Date.now();
-  return [`./data/indices/${code}.json?t=${t}`,`https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/indices/${code}.json?t=${t}`,`https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/indices/${code}.json?t=${t}`];
-}
+function buildStockUrls(code){ const t=Date.now(); return [`./data/stocks/${code}.json?t=${t}`,`https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/stocks/${code}.json?t=${t}`,`https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/stocks/${code}.json?t=${t}`]; }
+function buildIndexUrls(code){ const t=Date.now(); return [`./data/indices/${code}.json?t=${t}`,`https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/indices/${code}.json?t=${t}`,`https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/indices/${code}.json?t=${t}`]; }
 async function fetchJsonWithFallback(urls, timeoutMs=3500){
   const ctrls=urls.map(()=>new AbortController());
   const ps=urls.map((url,i)=>{
-    const ctrl=ctrls[i];
-    const tm=setTimeout(()=>ctrl.abort(),timeoutMs);
-    return fetch(url,{cache:'no-store',signal:ctrl.signal}).then(async r=>{
-      clearTimeout(tm);
-      if(!r.ok) throw new Error('http '+r.status);
-      const j=await r.json();
-      ctrls.forEach((c,idx)=>{ if(idx!==i) try{c.abort();}catch(e){} });
-      return j;
-    }).catch(e=>{ clearTimeout(tm); throw e; });
+    const ctrl=ctrls[i]; const tm=setTimeout(()=>ctrl.abort(),timeoutMs);
+    return fetch(url,{cache:'no-store',signal:ctrl.signal}).then(async r=>{ clearTimeout(tm); if(!r.ok) throw new Error('http '+r.status); const j=await r.json(); ctrls.forEach((c,idx)=>{ if(idx!==i) try{c.abort();}catch(e){} }); return j; }).catch(e=>{ clearTimeout(tm); throw e; });
   });
   if(Promise.any) return await Promise.any(ps);
   return await new Promise((res,rej)=>{let f=0,last=null;ps.forEach(p=>p.then(res).catch(e=>{f++;last=e;if(f===ps.length) rej(last);}));});
@@ -147,31 +129,17 @@ async function getFullHistory(secid, limit=150){
   const raw=j.bars||j;
   if(!raw||raw.length<1) throw new Error('后台无 '+code);
   const bars=Array.isArray(raw)?raw:(raw.bars||[]);
-  return bars.slice(-Math.min(limit,150)).map(b=>({
-    date:b.date,open:b.open,close:b.close,high:b.high,low:b.low,vol:b.vol||0,amount:b.amount||0,turnover:b.turnover||0,
-    avg:b.avg||(b.amount&&b.vol?b.amount/(b.vol*100):b.close),
-    cost50:b.cost50,cost75:b.cost75,cost90:b.cost90,zq1:b.zq1,zq:b.zq,vwma10:b.vwma10
-  }));
+  return bars.slice(-Math.min(limit,150)).map(b=>({ date:b.date,open:b.open,close:b.close,high:b.high,low:b.low,vol:b.vol||0,amount:b.amount||0,turnover:b.turnover||0, avg:b.avg||(b.amount&&b.vol?b.amount/(b.vol*100):b.close), cost50:b.cost50,cost75:b.cost75,cost90:b.cost90,zq1:b.zq1,zq:b.zq,vwma10:b.vwma10 }));
 }
 const histCache={};
 async function fetchTodayJsonFragment(){
-  const urls=[
-    `./data/realtime/today.json?t=${Date.now()}`,
-    `https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/realtime/today.json?t=${Date.now()}`,
-    `https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/realtime/today.json?t=${Date.now()}`
-  ];
-  try{
-    const j=await fetchJsonWithFallback(urls,2500);
-    if(j && (j.stocks||j.indices)) return j;
-  }catch(e){}
-  return null;
+  const urls=[`./data/realtime/today.json?t=${Date.now()}`,`https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/realtime/today.json?t=${Date.now()}`,`https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/realtime/today.json?t=${Date.now()}`];
+  try{ const j=await fetchJsonWithFallback(urls,2500); if(j && (j.stocks||j.indices)) return j; }catch(e){} return null;
 }
 async function getHistBars(secid, limit){
   let backendBars;
   if(histCache[secid]) backendBars=JSON.parse(JSON.stringify(histCache[secid]));
-  else {
-    try{ backendBars=await getFullHistory(secid,150); histCache[secid]=backendBars; }catch(e){ backendBars=[]; }
-  }
+  else { try{ backendBars=await getFullHistory(secid,150); histCache[secid]=backendBars; }catch(e){ backendBars=[]; } }
   let mergedBars = backendBars.slice();
   try{
     const frag=await fetchTodayJsonFragment();
@@ -183,10 +151,7 @@ async function getHistBars(secid, limit){
         const dateStr=frag.date||todayStrLocal();
         let byDate={}; mergedBars.forEach(b=>{ if(b&&b.date) byDate[b.date]=b; });
         const existed=byDate[dateStr];
-        const newBar={
-          date:dateStr, open:obj.open, close:obj.price, high:obj.high, low:obj.low,
-          vol:existed?existed.vol:0, amount:existed?existed.amount:0, turnover:existed?existed.turnover:0, avg:obj.price
-        };
+        const newBar={ date:dateStr, open:obj.open, close:obj.price, high:obj.high, low:obj.low, vol:existed?existed.vol:0, amount:existed?existed.amount:0, turnover:existed?existed.turnover:0, avg:obj.price };
         byDate[dateStr]=newBar;
         mergedBars=Object.keys(byDate).sort().map(d=>byDate[d]).slice(-150);
         mergedBars=enrichBarsWithChip(mergedBars);
@@ -196,20 +161,13 @@ async function getHistBars(secid, limit){
   return JSON.parse(JSON.stringify(mergedBars.slice(-Math.min(limit||60,150))));
 }
 function drawMain(canvas, bars){
-  const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight;
-  canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
+  const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight; canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
   if(!bars||!bars.length) return;
   const highs=bars.map(b=>b.high), lows=bars.map(b=>b.low);
   let minL=Math.min(...lows), maxH=Math.max(...highs); let pad=(maxH-minL)*0.08||1;
   let minY=minL-pad, maxY=maxH+pad; let range=maxY-minY||1;
   const y=v=>h-((v-minY)/range)*h; const n=bars.length; const x=i=> i/(n-1)*(w-10);
-  bars.forEach((b,i)=>{
-    const xx=x(i); const oY=y(b.open), cY=y(b.close), hY=y(b.high), lY=y(b.low);
-    ctx.strokeStyle=b.close>=b.open?'#e5484d':'#2ea567'; ctx.lineWidth=1;
-    ctx.beginPath(); ctx.moveTo(xx,hY); ctx.lineTo(xx,lY); ctx.stroke();
-    ctx.fillStyle=b.close>=b.open?'#e5484d':'#2ea567';
-    ctx.fillRect(xx-2, Math.min(oY,cY), 4, Math.max(1,Math.abs(cY-oY)));
-  });
+  bars.forEach((b,i)=>{ const xx=x(i); const oY=y(b.open), cY=y(b.close), hY=y(b.high), lY=y(b.low); ctx.strokeStyle=b.close>=b.open?'#e5484d':'#2ea567'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(xx,hY); ctx.lineTo(xx,lY); ctx.stroke(); ctx.fillStyle=b.close>=b.open?'#e5484d':'#2ea567'; ctx.fillRect(xx-2, Math.min(oY,cY), 4, Math.max(1,Math.abs(cY-oY))); });
 }
 function drawZQ(canvas, zq1,zq){
   const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight; canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
@@ -253,14 +211,11 @@ async function fillRowQuote(item, row){
 }
 async function renderIndexList(){
   const container=document.getElementById('idx-list'); container.innerHTML='';
-  for(const item of TEST_INDEXES){
-    const row=buildRow(item, container, (it)=>openDetail(it));
-    fillRowQuote(item,row);
-  }
+  for(const item of TEST_INDEXES){ const row=buildRow(item, container, (it)=>openDetail(it)); fillRowQuote(item,row); }
 }
 async function renderWatchlist(){
   const container=document.getElementById('watch-list'); container.innerHTML='';
-  const codes=['600127','300313','600519','000858','601318','300750','603259','002594','600036','300059','600900','002415'];
+  const codes=['600127','300313','600519','000858','601318','300750','603259','002594','600036','300059','600900','002415','300642','300740','002579','002584','003001','301086','600880','002708','600088','688175','301390','603248','688004'];
   for(const c of codes){
     const secid=(/^(6|9)/.test(c)?'1.':'0.')+c;
     const item={code:secid,name:c,short:c};
@@ -269,10 +224,7 @@ async function renderWatchlist(){
   }
 }
 let detailState={item:null};
-function openDetail(item){
-  detailState.item=item; document.getElementById('detail-title').textContent=item.name+' '+item.short; document.getElementById('detail').classList.add('open');
-  loadDetail();
-}
+function openDetail(item){ detailState.item=item; document.getElementById('detail-title').textContent=item.name+' '+item.short; document.getElementById('detail').classList.add('open'); loadDetail(); }
 document.getElementById('detail-back').onclick=()=>{ document.getElementById('detail').classList.remove('open'); };
 async function loadDetail(){
   const item=detailState.item; if(!item) return;
@@ -280,7 +232,7 @@ async function loadDetail(){
   metaEl.textContent='加载中...';
   try{
     const bars=await getHistBars(item.code, 150);
-    metaEl.textContent=`纯后台 ${bars.length}根 最后一根:${bars[bars.length-1]?.date} | today.json碎片已合并 铁律0前端`;
+    metaEl.textContent=`纯后台 ${bars.length}根 最后一根:${bars[bars.length-1]?.date} | today.json全市场碎片 铁律0前端`;
     drawMain(document.getElementById('chart-main'), bars);
     drawZQ(document.getElementById('chart-sub'), bars.map(b=>b.zq1), bars.map(b=>b.zq));
     drawVOL(document.getElementById('chart-vol'), bars);
