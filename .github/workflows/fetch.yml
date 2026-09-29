@@ -1,0 +1,42 @@
+name: Fetch Market Data
+
+on:
+  schedule:
+    - cron: '40 7 * * 1-5'
+  workflow_dispatch:
+
+concurrency:
+  group: fetch-data
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install deps
+        run: |
+          pip install -r requirements.txt || pip install baostock pandas requests
+
+      - name: Run full market ONCE
+        run: |
+          python scripts/fetch_daily.py --full --once
+
+      - name: Commit all data once
+        run: |
+          git config user.name "data-bot"
+          git config user.email "bot@github.com"
+          # 关键修复：先拉远端再推，避免10996红叉
+          git pull --rebase origin main || (git stash && git pull --rebase origin main && git stash pop || true)
+          git add -A
+          git commit -m "full market once $(date -u +%FT%TZ) 已完成5617/5617" || echo "no changes to commit"
+          git push origin main || (git pull --rebase origin main && git push origin main)
