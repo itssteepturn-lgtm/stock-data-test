@@ -358,7 +358,7 @@ function drawMiniK(canvas, bars){
   canvas.width=cssW*dpr; canvas.height=cssH*dpr;
   const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,cssW,cssH);
   if(!bars||bars.length<2) return;
-  const show=bars.slice(-60);
+  const show=bars.slice(-30);
   const highs=show.map(b=>b.high), lows=show.map(b=>b.low);
   let minL=Math.min(...lows), maxH=Math.max(...highs);
   let range=maxH-minL||1; const pad=range*0.08; minL-=pad; maxH+=pad; range=maxH-minL;
@@ -471,7 +471,7 @@ async function fillRowQuote(item, row, isUpdating=false){
   if(isUpdating) row.classList.add('updating');
   else { row.classList.add('updating'); setTimeout(()=>row.classList.remove('updating'), 800); }
   try{
-    const bars=await getHistBars(item.code,60);
+    const bars=await getHistBars(item.code,30);
     if(!bars.length) throw new Error('no bars');
     const live=await getLiveQuoteFull(item.code);
     let last=bars[bars.length-1];
