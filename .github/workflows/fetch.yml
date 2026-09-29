@@ -1,0 +1,36 @@
+name: Patch Self+Index Backend Only
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fetch-data
+  cancel-in-progress: false
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Install baostock only
+        run: pip install baostock
+      - name: Patch self stocks + indices backend only
+        run: python quick_patch_self.py
+      - name: Commit patch
+        run: |
+          git config user.name "data-bot"
+          git config user.email "bot@github.com"
+          git add data/stocks/*.json data/indices/*.json
+          git status
+          git commit -m "patch backend only" || echo "no changes"
+          git pull --rebase --autostash origin main || true
+          git push origin main || (git pull --rebase --autostash origin main && git push origin main)
