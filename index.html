@@ -119,6 +119,27 @@
   .cat-bar{display:flex;gap:6px;overflow-x:auto;padding:4px 0 8px;}
   .cat-bar .pill{white-space:nowrap;}
 </style>
+
+<script>
+// 纯后台覆盖 - 删除东财/腾讯前端
+window.fetchEastMoney2Days = async function(){ return null; };
+window.fetchEastMoneyFull = async function(){ return null; };
+window.getLiveQuoteFull = async function(){ return null; };
+window.fetchEastMoneyRealtime = async function(){ return null; };
+</script>
+
+<script>
+(function(){
+  const origGetHistBars = window.getHistBars;
+  window.getHistBars = async function(secid, limit, forceEast){
+    try{
+      let bars = await window.getFullHistory(secid,150);
+      if(!bars||!bars.length) return [];
+      return bars.slice(-Math.min(limit||60,150));
+    }catch(e){ return []; }
+  };
+})();
+</script>
 </head>
 <body>
 <div id="app">
@@ -229,34 +250,8 @@ function enrichBarsWithChip(bars){
   let ind=chipModelCompute(bars);
   return bars.map((b,i)=>({ ...b, avg: b.avg!=null ? b.avg : (b.amount && b.vol ? b.amount/(b.vol*100) : b.close), cost50:ind.cost50[i], cost75:ind.cost75[i], cost90:ind.cost90[i], zq1:ind.zq1[i], zq:ind.zq[i], vwma10:ind.vwma10[i] }));
 }
-async function fetchEastMoney2Days(secid){
-  const urls=[
-    `https://push2.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=10&end=20500101&iscca=1&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`,
-    `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=10&end=20500101&iscca=1&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`
-  ];
-  for(let url of urls){
-    try{
-      const res=await fetch(url,{cache:'no-store'});
-      if(!res.ok) continue;
-      const js=await res.json();
-      const klines=js?.data?.klines;
-      if(!klines||!klines.length) continue;
-      let out=[];
-      for(let line of klines.slice(-FRONTEND_TEMP_DAYS)){
-        let a=line.split(',');
-        if(a.length<6) continue;
-        let date=a[0]; let open=parseFloat(a[1]), close=parseFloat(a[2]), high=parseFloat(a[3]), low=parseFloat(a[4]);
-        let vol=parseFloat(a[5])||0; let amount=parseFloat(a[6])||0; let turnover=parseFloat(a[10])||0;
-        if(!amount && vol && close) amount=vol*100*close;
-        let avg=(amount && vol) ? amount/(vol*100) : close;
-        if(!isFinite(avg)||avg<=0) avg=close;
-        out.push({date,open,close,high,low,vol,amount,turnover,avg});
-      }
-      if(out.length) return out;
-    }catch(e){ continue; }
-  }
-  return null;
-}
+async function fetchEastMoney2Days(secid, limitDays=2){ return null; }
+
 function mergeBackendWithFrontend(backendBars, frontBars){
   if(!frontBars||!frontBars.length) return backendBars.slice(-150);
   let byDate={}; for(let b of backendBars) if(b&&b.date) byDate[b.date]=b;
@@ -274,44 +269,148 @@ function codeToSecid(code){
   return null;
 }
 function todayStrLocal(){const d=new Date();const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;}
-
 function buildStockUrls(code){
   const t=Date.now();
   return [
     `./data/stocks/${code}.json?t=${t}`,
-    `./data/stocks/${code}.json`,
-    `https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/stocks/${code}.json?t=${t}`
+    `./data@${DATA_BRANCH}/data/stocks/${code}.json?t=${t}`,
+    `./data/${DATA_BRANCH}/data/stocks/${code}.json?t=${t}`
   ];
 }
 function buildIndexUrls(code){
   const t=Date.now();
   return [
     `./data/indices/${code}.json?t=${t}`,
-    `./data/indices/${code}.json`,
-    `https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/indices/${code}.json?t=${t}`
+    `./data@${DATA_BRANCH}/data/indices/${code}.json?t=${t}`,
+    `./data/${DATA_BRANCH}/data/indices/${code}.json?t=${t}`
+    // 不再fallback到stocks，避免000001指数读到平安银行
   ];
 }
-function buildCalendarUrls(){const t=Date.now();return [`./data/trading_calendar.json?t=${t}`,`./data/trading_calendar.json`];}
-function buildMetaUrls(){const t=Date.now();return [`./data/meta.json?t=${t}`,`./data/meta.json`];}
-
+function buildCalendarUrls(){const t=Date.now();return [`./data/trading_calendar.json?t=${t}`,`./data@${DATA_BRANCH}/data/trading_calendar.json?t=${t}`,`./data/${DATA_BRANCH}/data/trading_calendar.json?t=${t}`];}
+function buildMetaUrls(){
+  const t=Date.now();
+  return [
+    `./data/meta.json?t=${t}`,
+    `./data@${DATA_BRANCH}/data/meta.json?t=${t}`,
+    `./data/${DATA_BRANCH}/data/meta.json?t=${t}`
+  ];
+}
 let TRADING_CALENDAR=[];
-
-
-async function fetchJsonWithFallback(urls, timeoutMs=6000){
-  for(let url of urls){
-    try{
-      const ctrl=new AbortController();
-      const tm=setTimeout(()=>ctrl.abort(), timeoutMs);
-      const r=await fetch(url,{cache:'no-store',signal:ctrl.signal});
+async function fetchJsonWithFallback(urls, timeoutMs=3500){
+  const ctrls=urls.map(()=>new AbortController());
+  const ps=urls.map((url,i)=>{
+    const ctrl=ctrls[i];
+    const tm=setTimeout(()=>ctrl.abort(),timeoutMs);
+    return fetch(url,{cache:'no-store',signal:ctrl.signal}).then(async r=>{
       clearTimeout(tm);
-      if(!r.ok) continue;
+      if(!r.ok) throw new Error('http '+r.status);
       const j=await r.json();
+      ctrls.forEach((c,idx)=>{ if(idx!==i) try{c.abort();}catch(e){} });
       return j;
-    }catch(e){ continue; }
-  }
-  throw new Error('后台加载失败 '+urls[0]);
+    }).catch(e=>{ clearTimeout(tm); throw e; });
+  });
+  if(Promise.any) return await Promise.any(ps);
+  return await new Promise((res,rej)=>{let f=0,last=null;ps.forEach(p=>p.then(res).catch(e=>{f++;last=e;if(f===ps.length) rej(last);}));});
 }
 
+async function loadTradingCalendar(){
+  try{
+    const cal=await fetchJsonWithFallback(buildCalendarUrls(),3500);
+    if(Array.isArray(cal) && cal.length>=20){TRADING_CALENDAR=cal.slice(-200);return TRADING_CALENDAR;}
+  }catch(e){}
+  return [];
+}
+function isWeekdayTradingDay(dateStr){
+  const d = new Date(dateStr+'T12:00:00');
+  const day = d.getDay();
+  return day>=1 && day<=5;
+}
+function getTodayStr(){ const d=new Date(); const p=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`; }
+function getLatestNTradingDates(n){
+  if(!TRADING_CALENDAR || TRADING_CALENDAR.length<n) return null;
+  let cal = TRADING_CALENDAR.slice(-200);
+  const today = getTodayStr();
+  if(typeof BACKEND_ONLY_TEST!=='undefined' && BACKEND_ONLY_TEST){
+    if(isWeekdayTradingDay(today) && cal[cal.length-1] < today){
+      return [...cal.slice(-(n-1)), today];
+    }
+  }
+  return cal.slice(-n);
+}
+function getLatestTradingDate(){
+  const today = getTodayStr();
+  if(typeof BACKEND_ONLY_TEST!=='undefined' && BACKEND_ONLY_TEST){
+    if(TRADING_CALENDAR && TRADING_CALENDAR.length){
+      const last = TRADING_CALENDAR[TRADING_CALENDAR.length-1];
+      if(isWeekdayTradingDay(today) && last < today) return today;
+      return last;
+    }
+    return today;
+  }
+  if(TRADING_CALENDAR && TRADING_CALENDAR.length) return TRADING_CALENDAR[TRADING_CALENDAR.length-1];
+  return null;
+}
+
+async function getFullHistory(secid, limit=150){
+  const code=secid.split('.')[1];
+  const isIndex=TEST_INDEXES.some(x=>x.code===secid);
+  const urls=isIndex?buildIndexUrls(code):buildStockUrls(code);
+  const j=await fetchJsonWithFallback(urls,3500);
+  const raw=j.bars||j;
+  if(!raw||raw.length<1) throw new Error('后台无 '+code);
+  const bars=Array.isArray(raw)?raw:(raw.bars||[]);
+  return bars.slice(-Math.min(limit,150)).map(b=>({
+    date:b.date,open:b.open,close:b.close,high:b.high,low:b.low,vol:b.vol||0,amount:b.amount||0,turnover:b.turnover||0,
+    avg:b.avg||(b.amount&&b.vol?b.amount/(b.vol*100):b.close),
+    cost50:b.cost50,cost75:b.cost75,cost90:b.cost90,zq1:b.zq1,zq:b.zq,vwma10:b.vwma10,
+    _pre:true
+  }));
+}
+const histCache={};
+async function getHistBars(secid, limit, forceEast=false){
+  let backendBars;
+  if(!forceEast && histCache[secid]) backendBars=JSON.parse(JSON.stringify(histCache[secid]));
+  else {
+    try{ backendBars=await getFullHistory(secid,150); histCache[secid]=backendBars; }catch(e){ backendBars=[]; }
+  }
+  let backendSlice=backendBars.slice(-Math.min(limit||60,150));
+  if(BACKEND_ONLY_TEST) return JSON.parse(JSON.stringify(backendSlice));
+  // 点击自选/指数时强制向东财要2天
+  let front=null;
+  try{ front=await fetchEastMoney2Days(secid); }catch(e){}
+  if(front && front.length){
+    let merged=mergeBackendWithFrontend(backendBars, front);
+    return JSON.parse(JSON.stringify(merged.slice(-Math.min(limit||60,150))));
+  }
+  return JSON.parse(JSON.stringify(backendSlice));
+}
+async function getLiveQuoteFull(secid){
+  if(typeof BACKEND_ONLY_TEST!=='undefined' && BACKEND_ONLY_TEST) return null;
+  try{
+    const isIndex=TEST_INDEXES.some(x=>x.code===secid);
+    const url=`https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f19,f20,f18,f170`;
+    const res=await fetch(url,{cache:'no-store'});
+    if(!res.ok) throw new Error('east live http');
+    const data=await res.json();
+    const d=data?.data; if(!d||!d.f43) throw new Error('east live no data');
+    // 指数的昨收 f60 经常错，用 f19 或缓存
+    let preClose=d.f60?d.f60/100:null;
+    if(isIndex){
+      // 指数用 f19 可能是昨收，或者用 f46? 这里先用 f60 但做合理性检查
+      if(preClose && Math.abs(preClose - d.f43/100)/ (d.f43/100) > 0.3){
+        preClose=null; // 异常，比如 24 vs 1560，丢弃
+      }
+    }
+    let pct=0;
+    if(d.f43&&preClose) pct=(d.f43-preClose)/preClose*100;
+    else if(d.f170) pct=d.f170/100; // 东财涨跌幅字段
+    return {
+      price:d.f43/100, open:d.f46/100, high:d.f44/100, low:d.f45/100, vol:d.f47, amount:d.f48,
+      preClose:preClose,
+      pct:pct
+    };
+  }catch(e){ return null; }
+}
 async function getIntraday(secid){
   if(typeof BACKEND_ONLY_TEST!=='undefined' && BACKEND_ONLY_TEST) return [];
   try{
@@ -502,7 +601,7 @@ async function fillRowQuote(item, row, isUpdating=false){
   if(isUpdating) row.classList.add('updating');
   else { row.classList.add('updating'); setTimeout(()=>row.classList.remove('updating'), 800); }
   try{
-    const bars=await getHistBars(item.code,20, true); // 强制东财2天融合
+    const bars=await getHistBars(item.code,60, true); // 强制东财2天融合
     if(!bars.length) throw new Error('no bars');
     const live=await getLiveQuoteFull(item.code);
     let last=bars[bars.length-1];
@@ -826,8 +925,8 @@ async function getFullMarketList(){
   try{
     const urls=[
       `./data/stock_list.json?t=${Date.now()}`,
-      `https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/stock_list.json?t=${Date.now()}`,
-      `https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/stock_list.json?t=${Date.now()}`
+      `./data@${DATA_BRANCH}/data/stock_list.json?t=${Date.now()}`,
+      `./data/${DATA_BRANCH}/data/stock_list.json?t=${Date.now()}`
     ];
     const j = await fetchJsonWithFallback(urls, 4000);
     if(Array.isArray(j) && j.length>100) return j;
