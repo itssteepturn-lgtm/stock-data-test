@@ -342,7 +342,7 @@ def main():
 
     # 指数只抓取数据，不参与cost/zq计算 - 纯K
     all_index_dates = set()
-    for idx_code in ['sh.000001','sz.399001','sz.399006','bj.899050','sh.899050','sh.000680','sz.000680']:
+    for idx_code in ['sh.000001','sz.399001','sz.399006','bj.899050','sh.899050','sh.000680']:  # 修复000680冲突：科创综指是sh.000680(1.000680)，sz.000680是山推股份股票，不能混用
         try:
             b = fetch_index_bars_with_timeout(idx_code, MAX_DAYS_KEPT+50, timeout=20)
             if b:
