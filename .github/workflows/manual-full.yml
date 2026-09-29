@@ -1,9 +1,9 @@
-name: daily-full-market-once
+name: manual-full-market-once
 on:
   workflow_dispatch:
     inputs:
       resume:
-        description: '是否断点续跑 true=续跑查缺补漏 false=全清理重跑'
+        description: '是否断点续跑 true=续跑 false=全清理重跑'
         required: false
         default: 'true'
         type: choice
@@ -11,7 +11,7 @@ on:
           - 'true'
           - 'false'
       batch_commit:
-        description: '每多少只提交一次 1000推荐 避免最后推送失败浪费时间'
+        description: '每多少只提交一次 1000推荐'
         required: false
         default: '1000'
         type: choice
@@ -21,7 +21,7 @@ on:
           - '2000'
 
 concurrency:
-  group: fetch-full-market-once
+  group: manual-full-market-once
   cancel-in-progress: false
 
 jobs:
@@ -39,17 +39,19 @@ jobs:
           python-version: '3.11'
       - name: Install deps
         run: pip install baostock
-      - name: Run full market with incremental push (manual)
+      - name: Run full market (manual, checkpoint resume, batch push)
         run: |
           RESUME="${{ github.event.inputs.resume || 'true' }}"
           BATCH="${{ github.event.inputs.batch_commit || '1000' }}"
           echo "Repo: itssteepturn-lgtm/stock-data-test manual run resume=$RESUME batch=$BATCH"
+          echo "指数只抓取数据，不参与cost/zq计算"
+          echo "卡顿就过，断点续存，每${BATCH}只提交一次"
           python scripts/fetch-daily.py --resume $RESUME --batch-commit $BATCH
-      - name: Final commit all remaining
+      - name: Final push remaining
         if: always()
         run: |
           git config user.name "data-bot"
           git config user.email "bot@test.com"
           git add data/
-          git diff --cached --quiet || git commit -m "manual final $(date -u +%Y-%m-%dT%H:%M:%SZ) $(cat data/meta.json | python3 -c 'import json,sys;print(json.load(sys.stdin).get(\"note\",\"\"))' 2>/dev/null || echo '')"
-          git push || (git pull --rebase && git push) || echo "final push failed, data kept in workspace, please run again with resume=true"
+          git diff --cached --quiet || git commit -m "manual final remaining $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push || (git pull --rebase && git push) || echo "final push failed, please re-run with resume=true"
