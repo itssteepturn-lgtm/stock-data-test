@@ -606,7 +606,7 @@ async function fillRowQuote(item, row, isUpdating=false){
   if(isUpdating) row.classList.add('updating');
   else { row.classList.add('updating'); setTimeout(()=>row.classList.remove('updating'), 800); }
   try{
-    const bars=await getHistBars(item.code,60, true); // 强制东财2天融合
+    const bars=await getHistBars(item.code,20, true); // 缩略图20根，强制东财2天融合
     if(!bars.length) throw new Error('no bars');
     const live=await getLiveQuoteFull(item.code);
     let last=bars[bars.length-1];
@@ -726,27 +726,34 @@ async function loadDetail(){
     const liveFull=await getLiveQuoteFull(item.code);
     const trends=await getIntraday(item.code);
     let merged=bars.slice();
-    let prevClose=bars.length>=1?bars[bars.length-1].close: (liveFull?liveFull.preClose:null);
-    if(liveFull && liveFull.preClose && Math.abs(liveFull.preClose - liveFull.price)/liveFull.price > 0.3){
-      // 指数昨收异常，丢弃，用上一根
-      liveFull.preClose=prevClose;
-    }
+    let prevClose=bars.length>=2?bars[bars.length-2].close: (bars.length>=1?bars[bars.length-1].close:null);
+    // 东财 preClose 不可靠，直接用后台/融合后的 prevClose
+    if(liveFull) liveFull.preClose=prevClose;
     const today=todayStrLocal();
-    if(liveFull){
+    if(liveFull && liveFull.price){
       const isSameDay=merged.length && merged[merged.length-1].date===today;
-      const liveBar={date:today, open:liveFull.open, close:liveFull.price, high:liveFull.high, low:liveFull.low, vol:liveFull.vol, amount:liveFull.amount, cost50:merged[merged.length-1]?.cost50, cost75:merged[merged.length-1]?.cost75, cost90:merged[merged.length-1]?.cost90, zq1:merged[merged.length-1]?.zq1, zq:merged[merged.length-1]?.zq, _live:true};
+      const liveBar={date:today, open:liveFull.open||merged[merged.length-1]?.open, close:liveFull.price, high:liveFull.high||merged[merged.length-1]?.high, low:liveFull.low||merged[merged.length-1]?.low, vol:liveFull.vol||merged[merged.length-1]?.vol, amount:liveFull.amount||merged[merged.length-1]?.amount, cost50:merged[merged.length-1]?.cost50, cost75:merged[merged.length-1]?.cost75, cost90:merged[merged.length-1]?.cost90, zq1:merged[merged.length-1]?.zq1, zq:merged[merged.length-1]?.zq, vwma10:merged[merged.length-1]?.vwma10, _live:true};
       if(isSameDay){ merged[merged.length-1]= {...merged[merged.length-1], ...liveBar}; }
-      else { merged.push(liveBar); }
-      if(merged.length>150) merged=merged.slice(-150);
-      prevClose=bars.length>=1?bars[bars.length-1].close: liveFull.preClose;
+      else {
+        // 如果融合后的最后一天已经是东财2天里的今天，不再push，避免K线断开
+        // 只有当 merged 最后一天 < today 且是交易日，才补今天
+        if(merged[merged.length-1]?.date < today){
+          merged.push(liveBar);
+          if(merged.length>150) merged=merged.slice(-150);
+        }
+      }
     }
     detailState.bars=merged;
     const last=merged[merged.length-1];
     const prev=merged.length>=2?merged[merged.length-2]:null;
     let pct=0;
-    if(liveFull && liveFull.preClose) pct=(liveFull.price-liveFull.preClose)/liveFull.preClose*100;
-    else if(prev) pct=(last.close-prev.close)/prev.close*100;
-    else if(liveFull) pct=liveFull.pct;
+    let basePrev = prev ? prev.close : last.close;
+    if(prev) pct=(last.close-prev.close)/prev.close*100;
+    if(liveFull && liveFull.price){
+      let livePct=(liveFull.price-basePrev)/basePrev*100;
+      if(Math.abs(liveFull.pct)>0.001 && Math.abs(liveFull.pct)<30) pct=liveFull.pct;
+      else pct=livePct;
+    }
     metaEl.textContent=`${last.date}  ${last.open.toFixed(2)}/${last.high.toFixed(2)}/${last.low.toFixed(2)}/${last.close.toFixed(2)}  量${(last.vol||0).toFixed(0)}`;
     priceEl.innerHTML=`<span>现价 <b class="${pct>=0?'up':'down'}">${(liveFull?liveFull.price:last.close).toFixed(2)}</b></span><span>涨跌 <b class="${pct>=0?'up':'down'}">${pct>=0?'+':''}${pct.toFixed(2)}%</b></span><span>昨收 ${prev?prev.close.toFixed(2):(liveFull?.preClose?liveFull.preClose.toFixed(2):'--')}</span>`;
 
