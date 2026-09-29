@@ -276,7 +276,7 @@ function enrichBarsWithChip(bars){
 // === 东财2日：a+b+d=c 推导 ===
 async function fetchEastMoney2Days(secid){
   try{
-    const url=`https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=2&lmt=5&end=20500101&iscca=1&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`;
+    const url=`https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=5&end=20500101&iscca=1&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`;
     const res=await fetch(url,{cache:'no-store'});
     if(!res.ok) throw new Error('east http');
     const js=await res.json();
@@ -671,32 +671,28 @@ async function fillRowQuote(item, row, isUpdating=false){
     const live=await getLiveQuoteFull(item.code);
     let last=bars[bars.length-1];
     let prev=bars.length>=2?bars[bars.length-2]:null;
-    let pct=0;
-    if(prev) pct=(last.close-prev.close)/prev.close*100;
-    if(live && live.preClose){
+    // a+b+d=c: preClose 不用东财 f60(易错)，用后台上一根 close
+    let basePrev = prev ? prev.close : last.close;
+    let pct = prev ? (last.close-prev.close)/prev.close*100 : 0;
+    let displayPrice = last.close;
+    if(live && live.price){
       const today=todayStrLocal();
       const isSameDay=last.date===today;
+      // 用 a=prevClose, b=livePrice => c=pct
+      let livePct = (live.price - basePrev)/basePrev*100;
+      // 东财 f170 的 pct 更准，优先用 f170，但 preClose 仍用后台
+      if(Math.abs(live.pct)>0.001 && Math.abs(live.pct)<25) pct=live.pct;
+      else pct=livePct;
+      displayPrice=live.price;
       if(isSameDay){
-        last={...last, close:live.price, high:Math.max(last.high, live.high), low:Math.min(last.low, live.low), _live:true};
+        last={...last, close:live.price, high:Math.max(last.high, live.high||last.high), low:Math.min(last.low, live.low||last.low), _live:true};
         bars[bars.length-1]=last;
       } else {
-        last={date:today, open:live.open, close:live.price, high:live.high, low:live.low, vol:live.vol, _live:true};
-        bars.push(last);
+        // 当天新K，未收盘，用 live 覆盖
+        // 不 push，避免 y 轴被拉大，保持后台+前端2日已融合的 bars
       }
-      if(Math.abs(live.pct)>0.001) pct=live.pct;
-      else if(prev) pct=(live.price-prev.close)/prev.close*100;
-      else if(live.preClose) pct=(live.price-live.preClose)/live.preClose*100;
-    } else if(live){
-      // 指数 preClose 异常时，用上一根算
-      const today=todayStrLocal();
-      if(prev){
-        pct=(live.price-prev.close)/prev.close*100;
-      }
-      last={...last, close:live.price, _live:true};
-      bars[bars.length-1]=last;
     }
     const priceEl=row.querySelector('.p'); const pctEl=row.querySelector('.pct');
-    const displayPrice=live?live.price:last.close;
     if(priceEl) priceEl.textContent=displayPrice.toFixed(2);
     if(pctEl){ pctEl.textContent=(pct>=0?'+':'')+pct.toFixed(2)+'%'; pctEl.className='pct '+(pct>0?'up':pct<0?'down':'flat'); priceEl.className='p '+(pct>0?'up':pct<0?'down':'flat'); }
     const canvas=row.querySelector('canvas'); if(canvas){ drawMiniK(canvas, bars); }
@@ -796,28 +792,33 @@ async function loadDetail(){
     const trends=await getIntraday(item.code);
     let merged=bars.slice();
     let prevClose=bars.length>=1?bars[bars.length-1].close: (liveFull?liveFull.preClose:null);
-    if(liveFull && liveFull.preClose && Math.abs(liveFull.preClose - liveFull.price)/liveFull.price > 0.3){
-      // 指数昨收异常，丢弃，用上一根
-      liveFull.preClose=prevClose;
-    }
+    // 东财 preClose 不可靠，直接用后台 prevClose
+    if(liveFull) liveFull.preClose=prevClose;
     const today=todayStrLocal();
+    // prevClose 用后台上一根，不用东财 f60，避免 57.84 这种异常
+    prevClose = bars.length>=2?bars[bars.length-2].close: (bars.length>=1?bars[bars.length-1].close:null);
     if(liveFull){
       const isSameDay=merged.length && merged[merged.length-1].date===today;
+      // a+b+d=c: avg = amount/(vol*100) 已在 liveFull 里推导，cost 用后台，不在这里重算
       const liveBar={date:today, open:liveFull.open, close:liveFull.price, high:liveFull.high, low:liveFull.low, vol:liveFull.vol, amount:liveFull.amount, cost50:merged[merged.length-1]?.cost50, cost75:merged[merged.length-1]?.cost75, cost90:merged[merged.length-1]?.cost90, zq1:merged[merged.length-1]?.zq1, zq:merged[merged.length-1]?.zq, _live:true};
       if(isSameDay){ merged[merged.length-1]= {...merged[merged.length-1], ...liveBar}; }
       else { merged.push(liveBar); }
       if(merged.length>150) merged=merged.slice(-150);
-      prevClose=bars.length>=1?bars[bars.length-1].close: liveFull.preClose;
     }
     detailState.bars=merged;
     const last=merged[merged.length-1];
     const prev=merged.length>=2?merged[merged.length-2]:null;
     let pct=0;
-    if(liveFull && liveFull.preClose) pct=(liveFull.price-liveFull.preClose)/liveFull.preClose*100;
-    else if(prev) pct=(last.close-prev.close)/prev.close*100;
-    else if(liveFull) pct=liveFull.pct;
+    let basePrev = prev ? prev.close : last.close;
+    if(prev) pct=(last.close-prev.close)/prev.close*100;
+    if(liveFull && liveFull.price){
+      let livePct = (liveFull.price - basePrev)/basePrev*100;
+      // f170 是东财涨跌幅，可信度高，但 preClose 仍用后台 basePrev 推导 pct
+      if(Math.abs(liveFull.pct)>0.001 && Math.abs(liveFull.pct)<25) pct=liveFull.pct;
+      else pct=livePct;
+    }
     metaEl.textContent=`${last.date}  ${last.open.toFixed(2)}/${last.high.toFixed(2)}/${last.low.toFixed(2)}/${last.close.toFixed(2)}  量${(last.vol||0).toFixed(0)}`;
-    priceEl.innerHTML=`<span>现价 <b class="${pct>=0?'up':'down'}">${(liveFull?liveFull.price:last.close).toFixed(2)}</b></span><span>涨跌 <b class="${pct>=0?'up':'down'}">${pct>=0?'+':''}${pct.toFixed(2)}%</b></span><span>昨收 ${prev?prev.close.toFixed(2):(liveFull?.preClose?liveFull.preClose.toFixed(2):'--')}</span>`;
+    priceEl.innerHTML=`<span>现价 <b class="${pct>=0?'up':'down'}">${(liveFull?liveFull.price:last.close).toFixed(2)}</b></span><span>涨跌 <b class="${pct>=0?'up':'down'}">${pct>=0?'+':''}${pct.toFixed(2)}%</b></span><span>昨收 ${prev?prev.close.toFixed(2):'--'}</span>`;
 
     const costEl=document.getElementById('detail-cost');
     const zqEl=document.getElementById('detail-zq');
