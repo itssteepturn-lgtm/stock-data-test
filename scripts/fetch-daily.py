@@ -1,5 +1,6 @@
+
 import baostock as bs
-import json, pathlib, datetime, time, argparse, sys
+import json, pathlib, datetime, argparse
 from datetime import timedelta
 import math
 from typing import List, Dict
@@ -110,6 +111,7 @@ META_FILE = pathlib.Path("data/meta.json")
 STOCK_LIST_FILE = pathlib.Path("data/stock_list.json")
 CHECKPOINT_FILE = pathlib.Path("data/checkpoint.json")
 INDICES_DIR = pathlib.Path("data/indices")
+CALENDAR_FILE = pathlib.Path("data/trading_calendar.json")
 INDICES_DIR.mkdir(parents=True, exist_ok=True)
 
 MAX_DAYS_KEPT = 150
@@ -167,36 +169,32 @@ def get_all_a_codes():
 def fetch_bars(code, days):
     end = datetime.date.today().strftime("%Y-%m-%d")
     start = (datetime.date.today() - timedelta(days=days)).strftime("%Y-%m-%d")
-    try:
-        rs = bs.query_history_k_data_plus(bs_code(code),
-            "date,open,high,low,close,volume,amount,turn",  # 8字段铁律
-            start_date=start, end_date=end, frequency="d", adjustflag="2")
-        bars=[]
-        while (rs.error_code=='0') & rs.next():
-            r = rs.get_row_data()
-            try:
-                bars.append({
-                    "date": r[0],
-                    "open": float(r[1]),
-                    "high": float(r[2]),
-                    "low": float(r[3]),
-                    "close": float(r[4]),
-                    "vol": float(r[5])/100.0,
-                    "amount": float(r[6]),
-                    "turnover": float(r[7]) if r[7] else 0.0
-                })
-            except:
-                continue
-        return bars
-    except Exception as e:
-        print(f"{code} fetch exception {e}")
-        return []
+    rs = bs.query_history_k_data_plus(bs_code(code),
+        "date,open,high,low,close,volume,amount,turn",
+        start_date=start, end_date=end, frequency="d", adjustflag="2")
+    bars=[]
+    while (rs.error_code=='0') & rs.next():
+        r = rs.get_row_data()
+        try:
+            bars.append({
+                "date": r[0],
+                "open": float(r[1]),
+                "high": float(r[2]),
+                "low": float(r[3]),
+                "close": float(r[4]),
+                "vol": float(r[5])/100.0,
+                "amount": float(r[6]),
+                "turnover": float(r[7]) if r[7] else 0.0
+            })
+        except:
+            continue
+    return bars
 
 def fetch_index_bars(bs_code_str, days):
     end = datetime.date.today().strftime("%Y-%m-%d")
     start = (datetime.date.today() - timedelta(days=days)).strftime("%Y-%m-%d")
     rs = bs.query_history_k_data_plus(bs_code_str,
-        "date,open,high,low,close,volume,amount",  # 7字段 不含turn
+        "date,open,high,low,close,volume,amount",
         start_date=start, end_date=end, frequency="d", adjustflag="2")
     bars=[]
     while (rs.error_code=='0') & rs.next():
@@ -217,11 +215,12 @@ def fetch_index_bars(bs_code_str, days):
     return bars
 
 def main():
+    import argparse, json
     parser = argparse.ArgumentParser()
     parser.add_argument('--resume', type=str, default='true')
     args = parser.parse_args()
     resume_flag = args.resume.lower() not in ('false','0','no')
-    print(f"resume={resume_flag} 模式=全市场一次性全采集(无500分批/无38分钟预算)")
+    print(f"resume={resume_flag} 全市场一次性全采集+交易日历 指数纯净")
 
     if not resume_flag and CHECKPOINT_FILE.exists():
         CHECKPOINT_FILE.unlink()
@@ -246,21 +245,31 @@ def main():
     stock_list = [{"code": bs_code(c), "name": c, "short": c, "type": "stock"} for c in all_codes]
     STOCK_LIST_FILE.write_text(json.dumps(stock_list, ensure_ascii=False), encoding='utf-8')
 
-    # 指数150天 - 只存bars，不算cost/zq
+    all_index_dates = set()
     for idx_code in ['sh.000001','sz.399001','sz.399006','sh.000688']:
         try:
-            b = fetch_index_bars(idx_code, MAX_DAYS_KEPT)
+            b = fetch_index_bars(idx_code, MAX_DAYS_KEPT+50)
             if b:
                 cc = idx_code.split('.')[1]
                 p = INDICES_DIR / f"{cc}.json"
-                p.write_text(json.dumps(b, ensure_ascii=False), encoding='utf-8')
-                print(f"{idx_code} index {len(b)}")
+                pure = [{"date":x["date"],"open":x["open"],"high":x["high"],"low":x["low"],"close":x["close"],"vol":x["vol"],"amount":x["amount"],"turnover":0.0} for x in b[-MAX_DAYS_KEPT:]]
+                p.write_text(json.dumps(pure, ensure_ascii=False), encoding='utf-8')
+                print(f"{idx_code} index {len(pure)} pure")
+                for bar in b:
+                    all_index_dates.add(bar['date'])
         except Exception as e:
             print(f"index {idx_code} err {e}")
 
+    calendar_dates = sorted(list(all_index_dates))
+    calendar_dates = calendar_dates[-200:]
+    try:
+        CALENDAR_FILE.write_text(json.dumps(calendar_dates, ensure_ascii=False), encoding='utf-8')
+        print(f"trading_calendar {len(calendar_dates)}")
+    except Exception as e:
+        print(f"calendar write fail {e}")
+
     done_this_run = 0
     failed = []
-
     for idx, code in enumerate(all_codes):
         if resume_flag and code in checkpoint:
             continue
@@ -274,7 +283,6 @@ def main():
                     continue
             except:
                 pass
-
         existing = []
         if resume_flag and path.exists():
             try:
@@ -285,7 +293,6 @@ def main():
                     existing = j
             except:
                 existing = []
-
         need_days = TOPUP_DAYS if existing else DEEP_SEED_DAYS
         try:
             new_bars = fetch_bars(code, need_days)
@@ -293,7 +300,6 @@ def main():
             print(f"{code} fetch fail skip {e}")
             failed.append(code)
             continue
-
         by_date = {b['date']: b for b in existing}
         for b in new_bars:
             by_date[b['date']] = b
@@ -308,7 +314,6 @@ def main():
             print(f"{code} compute fail skip {e}")
             failed.append(code)
             continue
-
         enriched = []
         for i, b in enumerate(merged):
             enriched.append({**b, "cost50": indicators['cost50'][i], "cost75": indicators['cost75'][i], "cost90": indicators['cost90'][i], "zq1": indicators['zq1'][i], "zq": indicators['zq'][i], "vwma10": indicators['vwma10'][i]})
@@ -319,7 +324,6 @@ def main():
         except Exception as e:
             print(f"{code} write fail {e}")
             continue
-
         checkpoint.add(code)
         done_this_run += 1
         if (idx+1) % 100 == 0:
@@ -328,15 +332,14 @@ def main():
         else:
             if done_this_run <= 10 or done_this_run % 50 == 0:
                 print(f"{code} ok {len(enriched)} done {len(checkpoint)}/{len(all_codes)}")
-
     CHECKPOINT_FILE.write_text(json.dumps({"done": sorted(list(checkpoint)), "updated": datetime.datetime.now().isoformat()}, ensure_ascii=False), encoding='utf-8')
     bs.logout()
     META_FILE.write_text(json.dumps({
-        "lastUpdateDate": datetime.date.today().isoformat(),
+        "lastUpdateDate": datetime.datetime.now().date().isoformat(),
         "total": len(all_codes),
         "updated": len(checkpoint),
         "ranAt": datetime.datetime.now().isoformat(),
-        "note": f"全市场正式版 150天 一次性全采集 已完成{len(checkpoint)}/{len(all_codes)} 失败{len(failed)}只",
+        "note": f"全市场正式版 150天 指数纯净+日历 已完成{len(checkpoint)}/{len(all_codes)} 失败{len(failed)}只",
         "done": len(checkpoint),
         "resume": resume_flag,
         "failed": failed[:100]
