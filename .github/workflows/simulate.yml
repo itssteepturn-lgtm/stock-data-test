@@ -1,0 +1,36 @@
+name: Simulate Today Fragments
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '*/5 1-7 * * 1-5'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: realtime-today
+  cancel-in-progress: false
+
+jobs:
+  sim:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+      - name: Simulate today.json (even if 2 days missing)
+        run: python simulate_today.py
+      - name: Commit today.json
+        run: |
+          git config user.name "data-bot"
+          git config user.email "bot@github.com"
+          git pull --rebase origin main || true
+          git add data/realtime/today.json
+          git status
+          git commit -m "simulate today fragments $(date -u +%H:%M)" || echo "no changes"
+          git push origin main || (git pull --rebase origin main && git push origin main)
