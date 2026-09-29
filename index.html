@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><style>
+@font-face {
+  font-family: "Optimistic";
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("/fonts/OptimisticAI_VF_Optimized.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Optimistic Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/OptimisticMono_W_TextRegular.woff2") format("woff2");
+}
+:where(html) {
+  font-family: "Optimistic", system-ui, sans-serif;
+}
+:where(code, pre, kbd, samp) {
+  font-family: "Optimistic Mono", ui-monospace, monospace;
+}
+</style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>盘面 · 铁律纯后台2天碎片</title>
+<style>
+:root{--bg:#0d1117;--panel:#151b23;--line:#232b36;--text:#e6e9ef;--dim:#8891a0;--up:#e5484d;--down:#2ea567;--accent:#4a90e2;}
+*{box-sizing:border-box} html,body{margin:0;padding:0;background:var(--bg);color:var(--text);font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
+#app{max-width:760px;margin:0 auto;padding:12px 12px 80px}
+header{display:flex;justify-content:space-between;padding:6px 2px 12px}
+header h1{font-size:18px;font-weight:700;margin:0}
+#clock{font-size:11px;color:var(--dim)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px;margin-bottom:8px}
+.idx-row{display:flex;align-items:center;gap:10px}
+.idx-name{width:66px}.idx-name .n{font-size:13px;font-weight:600}.idx-name .c{font-size:10px;color:var(--dim)}
+.idx-chart{flex:1;height:42px}.idx-price{width:108px;text-align:right}.idx-price .p{font-size:14px;font-weight:600}.idx-price .pct{font-size:11px;margin-top:2px}
+.up{color:var(--up)}.down{color:var(--down)}.flat{color:var(--dim)}
+.section-label{font-size:11px;color:var(--dim);margin:20px 2px 8px}
+.pill{font-size:11px;padding:4px 10px;border-radius:20px;border:1px solid var(--line);color:var(--dim)}
+.pill.active{color:var(--text);border-color:var(--accent);background:rgba(74,144,226,.12)}
+#detail{position:fixed;inset:0;background:var(--bg);transform:translateY(100%);transition:transform .28s;z-index:20;overflow-y:auto}
+#detail.open{transform:translateY(0)}
+#detail-inner{max-width:760px;margin:0 auto;padding:12px}
+.detail-head{display:flex;align-items:center;gap:10px;padding:6px 2px 8px;position:sticky;top:0;background:var(--bg)}
+.back{font-size:22px;padding:2px 8px 2px 0}
+.detail-head .title{font-size:15px;font-weight:600;flex:1}
+canvas.chart{width:100%;background:var(--panel);border:1px solid var(--line);border-radius:10px;display:block;margin-bottom:6px}
+canvas.chart.main{height:260px} canvas.chart.zq{height:105px} canvas.chart.vol{height:52px} canvas.chart.mini{height:42px;background:transparent;border:none}
+.hint{font-size:11px;color:var(--dim);text-align:center;padding:10px 0}
+</style>
+</head>
+<body>
+<div id="app">
+<header><h1>盘面 · 2天碎片铁律版</h1><div id="clock">--:--:--</div></header>
+<div id="data-status" style="font-size:10px;color:var(--dim);margin:-8px 2px 12px;display:flex;justify-content:space-between;">
+<span id="data-status-text">纯后台+2天碎片 0东财0腾讯</span><span class="pill active">后台+2天碎片</span>
+</div>
+<div class="section-label">指数 · 后台150天+2天碎片</div>
+<div id="idx-list"></div>
+<div class="section-label">自选股 · 全市场2天碎片</div>
+<div id="watch-list"></div>
+<div id="detail"><div id="detail-inner">
+<div class="detail-head"><div class="back" id="detail-back">‹</div><div class="title" id="detail-title">--</div></div>
+<div id="detail-meta" class="hint" style="text-align:left"></div>
+<canvas id="chart-main" class="chart main"></canvas>
+<canvas id="chart-sub" class="chart zq"></canvas>
+<canvas id="chart-vol" class="chart vol"></canvas>
+</div></div>
+</div>
+<script>
+const DATA_REPO='itssteepturn-lgtm/stock-data-test';
+const DATA_BRANCH='main';
+const TEST_INDEXES=[
+  {code:'1.000001',name:'上证指数',short:'000001',type:'index'},
+  {code:'0.399001',name:'深证成指',short:'399001',type:'index'},
+  {code:'0.399006',name:'创业板指',short:'399006',type:'index'},
+  {code:'1.000688',name:'科创50',short:'000688',type:'index'},
+];
+function chipModelCompute(bars){
+  if(!bars||!bars.length) return {cost50:[],cost75:[],cost90:[],zq1:[],zq:[],vwma10:[]};
+  const lows=bars.map(b=>b.low), highs=bars.map(b=>b.high);
+  let minP=Math.min(...lows)*0.98, maxP=Math.max(...highs)*1.02;
+  let buckets=300; let step=(maxP-minP)/buckets||1; let w=new Array(buckets).fill(0);
+  function price_at(i){ return minP + (i+0.5)*step; }
+  function idx_of(p){ let i=Math.floor((p-minP)/step); if(i<0) i=0; if(i>=buckets) i=buckets-1; return i; }
+  function percentile(pct){ let total=w.reduce((a,b)=>a+b,0); if(total<=0) return null; let target=total*pct/100, acc=0; for(let i=0;i<buckets;i++){ acc+=w[i]; if(acc>=target) return price_at(i); } return price_at(buckets-1); }
+  function winner_below(price){ let total=w.reduce((a,b)=>a+b,0); if(total<=0) return null; let idx=idx_of(price); let acc=0; for(let i=0;i<=idx;i++) acc+=w[i]; return acc/total*100; }
+  let cost50=[],cost75=[],cost90=[],zq1=[],zq=[],vwma10=[];
+  for(let i=0;i<bars.length;i++){
+    let b=bars[i]; let vol=b.vol||0; let avg = b.avg!=null ? b.avg : b.close;
+    let turnover=b.turnover||0; turnover=Math.max(0,Math.min(1,turnover/100));
+    if(turnover>0){ let decay=1-turnover; for(let k=0;k<buckets;k++) w[k]*=decay; w[idx_of(avg)]+=turnover; }
+    cost50.push(percentile(50)); cost75.push(percentile(75)); cost90.push(percentile(90));
+    let win=bars.slice(Math.max(0,i-9),i+1); let sumVol=win.reduce((s,x)=>s+(x.vol||0),0);
+    let vwma=sumVol>0?win.reduce((s,x)=>s+x.close*(x.vol||0),0)/sumVol:b.close;
+    vwma10.push(vwma); zq1.push(winner_below(vwma)); zq.push(winner_below(avg));
+  }
+  return {cost50,cost75,cost90,zq1,zq,vwma10};
+}
+function enrichBarsWithChip(bars){
+  let ind=chipModelCompute(bars);
+  return bars.map((b,i)=>({ ...b, avg: b.avg!=null ? b.avg : b.close, cost50:ind.cost50[i], cost75:ind.cost75[i], cost90:ind.cost90[i], zq1:ind.zq1[i], zq:ind.zq[i], vwma10:ind.vwma10[i] }));
+}
+setInterval(()=>{document.getElementById('clock').textContent=new Date().toLocaleTimeString();},1000);
+function todayStrLocal(){const d=new Date();const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;}
+function buildStockUrls(code){ const t=Date.now(); return [`./data/stocks/${code}.json?t=${t}`,`https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/stocks/${code}.json?t=${t}`,`https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/stocks/${code}.json?t=${t}`]; }
+function buildIndexUrls(code){ const t=Date.now(); return [`./data/indices/${code}.json?t=${t}`,`https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/indices/${code}.json?t=${t}`,`https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/indices/${code}.json?t=${t}`]; }
+async function fetchJsonWithFallback(urls, timeoutMs=3500){
+  const ctrls=urls.map(()=>new AbortController());
+  const ps=urls.map((url,i)=>{
+    const ctrl=ctrls[i]; const tm=setTimeout(()=>ctrl.abort(),timeoutMs);
+    return fetch(url,{cache:'no-store',signal:ctrl.signal}).then(async r=>{ clearTimeout(tm); if(!r.ok) throw new Error('http '+r.status); const j=await r.json(); ctrls.forEach((c,idx)=>{ if(idx!==i) try{c.abort();}catch(e){} }); return j; }).catch(e=>{ clearTimeout(tm); throw e; });
+  });
+  if(Promise.any) return await Promise.any(ps);
+  return await new Promise((res,rej)=>{let f=0,last=null;ps.forEach(p=>p.then(res).catch(e=>{f++;last=e;if(f===ps.length) rej(last);}));});
+}
+async function getFullHistory(secid, limit=150){
+  const code=secid.split('.')[1];
+  const isIndex=TEST_INDEXES.some(x=>x.code===secid);
+  const urls=isIndex?buildIndexUrls(code):buildStockUrls(code);
+  const j=await fetchJsonWithFallback(urls,3500);
+  const raw=j.bars||j;
+  if(!raw||raw.length<1) throw new Error('后台无 '+code);
+  const bars=Array.isArray(raw)?raw:(raw.bars||[]);
+  return bars.slice(-Math.min(limit,150)).map(b=>({ date:b.date,open:b.open,close:b.close,high:b.high,low:b.low,vol:b.vol||0,amount:b.amount||0,turnover:b.turnover||0, avg:b.avg||b.close, cost50:b.cost50,cost75:b.cost75,cost90:b.cost90,zq1:b.zq1,zq:b.zq,vwma10:b.vwma10 }));
+}
+const histCache={};
+async function fetchTodayJsonFragment(){
+  const urls=[`./data/realtime/today.json?t=${Date.now()}`,`https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/realtime/today.json?t=${Date.now()}`,`https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/realtime/today.json?t=${Date.now()}`];
+  try{ const j=await fetchJsonWithFallback(urls,2500); if(j && (j.stocks||j.indices)) return j; }catch(e){} return null;
+}
+async function getHistBars(secid, limit){
+  let backendBars;
+  if(histCache[secid]) backendBars=JSON.parse(JSON.stringify(histCache[secid]));
+  else { try{ backendBars=await getFullHistory(secid,150); histCache[secid]=backendBars; }catch(e){ backendBars=[]; } }
+  let mergedBars = backendBars.slice();
+  try{
+    const frag=await fetchTodayJsonFragment();
+    if(frag){
+      const code=secid.split('.')[1];
+      const isIdx=TEST_INDEXES.some(x=>x.code===secid);
+      const container=isIdx?frag.indices:frag.stocks;
+      const obj=container?.[code];
+      if(obj){
+        // 支持新格式：obj是数组[28号,29号]，也兼容旧格式单对象
+        const list = Array.isArray(obj) ? obj : [obj];
+        let byDate={}; mergedBars.forEach(b=>{ if(b&&b.date) byDate[b.date]=b; });
+        for(const o of list){
+          if(!o || !o.price) continue;
+          const dateStr=o.date||frag.date;
+          const existed=byDate[dateStr];
+          const newBar={ date:dateStr, open:o.open, close:o.price, high:o.high, low:o.low, vol:existed?existed.vol:0, amount:existed?existed.amount:0, turnover:existed?existed.turnover:0, avg:o.price };
+          byDate[dateStr]=newBar;
+        }
+        mergedBars=Object.keys(byDate).sort().map(d=>byDate[d]).slice(-150);
+        mergedBars=enrichBarsWithChip(mergedBars);
+      }
+    }
+  }catch(e){ console.log('frag error', e); }
+  return JSON.parse(JSON.stringify(mergedBars.slice(-Math.min(limit||60,150))));
+}
+function drawMain(canvas, bars){
+  const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight; canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
+  if(!bars||!bars.length) return;
+  const highs=bars.map(b=>b.high), lows=bars.map(b=>b.low);
+  let minL=Math.min(...lows), maxH=Math.max(...highs); let pad=(maxH-minL)*0.08||1;
+  let minY=minL-pad, maxY=maxH+pad; let range=maxY-minY||1;
+  const y=v=>h-((v-minY)/range)*h; const n=bars.length; const x=i=> i/(n-1)*(w-10);
+  bars.forEach((b,i)=>{ const xx=x(i); const oY=y(b.open), cY=y(b.close), hY=y(b.high), lY=y(b.low); ctx.strokeStyle=b.close>=b.open?'#e5484d':'#2ea567'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(xx,hY); ctx.lineTo(xx,lY); ctx.stroke(); ctx.fillStyle=b.close>=b.open?'#e5484d':'#2ea567'; ctx.fillRect(xx-2, Math.min(oY,cY), 4, Math.max(1,Math.abs(cY-oY))); });
+}
+function drawZQ(canvas, zq1,zq){
+  const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight; canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
+  if(!zq1||!zq1.length) return;
+  const y=v=>h-(v/100)*h; const n=zq1.length; const x=i=> i/(n-1)*(w-10);
+  [[100,'#3a4250'],[50,'#e5484d'],[0,'#3a4250']].forEach(([v,c])=>{ ctx.strokeStyle=c; ctx.setLineDash(v===50?[]:[3,3]); ctx.beginPath(); ctx.moveTo(0,y(v)); ctx.lineTo(w-10,y(v)); ctx.stroke();}); ctx.setLineDash([]);
+  [[zq1,'#4a90e2'],[zq,'#c46be0']].forEach(([s,c])=>{ if(!s) return; ctx.strokeStyle=c; ctx.lineWidth=1.2; ctx.beginPath(); let st=false; s.forEach((v,i)=>{ if(v==null) return; const xx=x(i); if(!st){ctx.moveTo(xx,y(v));st=true;} else ctx.lineTo(xx,y(v));}); ctx.stroke();});
+}
+function drawVOL(canvas, bars){
+  const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight; canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
+  if(!bars||!bars.length) return;
+  const maxV=Math.max(...bars.map(b=>b.vol||0))||1; const n=bars.length; const x=i=> i/(n-1)*(w-10);
+  bars.forEach((b,i)=>{ const xx=x(i); const hh=(b.vol||0)/maxV*h; ctx.fillStyle=b.close>=b.open?'#e5484d':'#2ea567'; ctx.fillRect(xx-1, h-hh, 2, hh); });
+}
+function drawMiniK(canvas, bars){
+  const dpr=window.devicePixelRatio||1; const w=canvas.width,h=canvas.height; canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
+  if(!bars||bars.length<2) return;
+  const closes=bars.map(b=>b.close); const min=Math.min(...closes), max=Math.max(...closes); const range=max-min||1;
+  const x=i=> i/(bars.length-1)*(w); const y=v=> h-((v-min)/range)*h;
+  ctx.strokeStyle=closes[closes.length-1]>=closes[0]?'#e5484d':'#2ea567'; ctx.lineWidth=1;
+  ctx.beginPath(); bars.forEach((b,i)=>{ const xx=x(i), yy=y(b.close); if(i===0) ctx.moveTo(xx,yy); else ctx.lineTo(xx,yy); }); ctx.stroke();
+}
+function buildRow(item, container, onClick){
+  const row=document.createElement('div'); row.className='card idx-row';
+  row.innerHTML=`<div class="idx-name"><div class="n">${item.name}</div><div class="c">${item.short}</div></div><canvas class="idx-chart mini" width="80" height="42"></canvas><div class="idx-price"><div class="p">--</div><div class="pct">加载中</div></div>`;
+  row.onclick=()=>onClick(item,row); container.appendChild(row); return row;
+}
+async function fillRowQuote(item, row){
+  row.classList.add('updating');
+  try{
+    const bars=await getHistBars(item.code,60);
+    if(!bars.length) throw new Error('no bars');
+    let last=bars[bars.length-1]; let prev=bars.length>=2?bars[bars.length-2]:null;
+    let pct = prev ? (last.close - prev.close)/prev.close*100 : 0;
+    const priceEl=row.querySelector('.p'); const pctEl=row.querySelector('.pct');
+    if(priceEl) priceEl.textContent=last.close.toFixed(2);
+    if(pctEl){ pctEl.textContent=(pct>=0?'+':'')+pct.toFixed(2)+'%'; pctEl.className='pct '+(pct>0?'up':pct<0?'down':'flat'); priceEl.className='p '+(pct>0?'up':pct<0?'down':'flat'); }
+    const canvas=row.querySelector('canvas'); if(canvas){ drawMiniK(canvas, bars); }
+  }catch(e){ row.querySelector('.p').textContent='无数据'; }
+  finally{ setTimeout(()=>row.classList.remove('updating'), 600); }
+}
+async function renderIndexList(){
+  const container=document.getElementById('idx-list'); container.innerHTML='';
+  for(const item of TEST_INDEXES){ const row=buildRow(item, container, (it)=>openDetail(it)); fillRowQuote(item,row); }
+}
+async function renderWatchlist(){
+  const container=document.getElementById('watch-list'); container.innerHTML='';
+  const codes=['600127','300313','600519','000858','601318','300750','603259','002594','600036','300059','600900','002415','300642','300740','002579','002584','003001','301086','600880','002708','600088','688175','301390','603248','688004'];
+  for(const c of codes){
+    const secid=(/^(6|9)/.test(c)?'1.':'0.')+c;
+    const item={code:secid,name:c,short:c};
+    const row=buildRow(item, container, (it)=>openDetail(it));
+    fillRowQuote(item,row);
+  }
+}
+let detailState={item:null};
+function openDetail(item){ detailState.item=item; document.getElementById('detail-title').textContent=item.name+' '+item.short; document.getElementById('detail').classList.add('open'); loadDetail(); }
+document.getElementById('detail-back').onclick=()=>{ document.getElementById('detail').classList.remove('open'); };
+async function loadDetail(){
+  const item=detailState.item; if(!item) return;
+  const metaEl=document.getElementById('detail-meta');
+  metaEl.textContent='加载中...';
+  try{
+    const bars=await getHistBars(item.code, 150);
+    metaEl.textContent=`纯后台 ${bars.length}根 最后一根:${bars[bars.length-1]?.date} | 2天碎片已合并 铁律0前端`;
+    drawMain(document.getElementById('chart-main'), bars);
+    drawZQ(document.getElementById('chart-sub'), bars.map(b=>b.zq1), bars.map(b=>b.zq));
+    drawVOL(document.getElementById('chart-vol'), bars);
+  }catch(e){ metaEl.textContent='加载失败 '+e.message; }
+}
+setInterval(()=>{document.getElementById('clock').textContent=new Date().toLocaleTimeString();},1000);
+renderIndexList();
+renderWatchlist();
+</script>
+<script>(function(){var loc=location.href.replace(/#.*$/,"");var ATTR_NAMES=["data-product-id","data-productid","data-product_id","product-id","productid","product_id","data-source-entity-id","source-entity-id","source_entity_id","data-product","data-metadata","data-meta"];var DATASET_KEYS=["productId","productid","product_id","sourceEntityId","sourceentityid","source_entity_id","product","metadata","meta"];function readProductId(value){if(typeof value!=="string"||value.length===0)return null;if(/^[0-9]{6,}$/.test(value))return value;var match=value.match(/(?:product(?:_|-)?id|source(?:_|-)?entity(?:_|-)?id)["'=:\s]+([0-9]{6,})/i);return match?match[1]:null}function extractProductId(start){for(var node=start;node&&node!==document.body;node=node.parentElement){for(var i=0;i<ATTR_NAMES.length;i++){var attrValue=node.getAttribute&&node.getAttribute(ATTR_NAMES[i]);var attrProductId=readProductId(attrValue);if(attrProductId)return attrProductId}var dataset=node.dataset||null;if(dataset){for(var j=0;j<DATASET_KEYS.length;j++){var dataValue=dataset[DATASET_KEYS[j]];var dataProductId=readProductId(dataValue);if(dataProductId)return dataProductId}}}return null}function isInlineMediaSlotElement(node){return !!(node&&node.getAttribute&&node.getAttribute("data-clippy-inline-media-slot")!==null)}function findInlineMediaSlot(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(isInlineMediaSlotElement(node))return node}return null}function readInlineMediaUrl(node){if(!node)return null;return node.getAttribute&&((node.getAttribute("data-clippy-inline-media-url")||node.getAttribute("data-url")||node.getAttribute("data_url")))||node.href||null}function stripHash(url){return String(url).replace(/#.*$/,"")}function urlsMatch(a,b){if(!a||!b)return false;try{return stripHash(new URL(a,loc).href)===stripHash(new URL(b,loc).href)}catch(_){return stripHash(a)===stripHash(b)}}function isFirstPartyReelUrl(value){try{var url=new URL(value,loc);if(url.protocol!=="https:")return false;var host=url.hostname.toLowerCase();var supported=host==="instagram.com"||host.endsWith(".instagram.com")||host==="facebook.com"||host.endsWith(".facebook.com");return supported&&/\/reels?\//i.test(url.pathname)}catch(_){return false}}function isInlineMediaUrlClick(node,href){var slot=findInlineMediaSlot(node);if(!slot)return false;var slotUrl=readInlineMediaUrl(slot);if(slotUrl)return urlsMatch(href,slotUrl);return isFirstPartyReelUrl(href)}function findDataHref(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(node.getAttribute){var href=node.getAttribute("data-href")||node.getAttribute("data-url");if(href)return{href:href,node:node}}}return null}var nativeOpen=window.open;window.open=function(url){if(parent!==window&&typeof url==="string"&&/^https?:\/\//.test(url)){parent.postMessage({type:"ecto:usercontent-link-click",href:url},"*");return null}return nativeOpen?nativeOpen.apply(window,arguments):null};document.addEventListener("click",function(e){var target=e.target instanceof Element?e.target:null;if(!target)return;if(parent===window)return;var a=target.closest?target.closest("a[href]"):null;if(a&&a.href&&/^https?:\/\//.test(a.href)&&a.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(a,a.href))return;var productId=extractProductId(target)||extractProductId(a);if(productId){e.preventDefault();parent.postMessage({type:"ecto-artifact-link-click",productId:productId},"*");return}e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:a.href},"*");return}var dataHref=findDataHref(target);if(dataHref&&/^https?:\/\//.test(dataHref.href)&&dataHref.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(dataHref.node,dataHref.href))return;e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:dataHref.href},"*")}},true)})();</script><script>(function(){var FOCUS_TYPE="ecto:artifact-focus-request";var CLOSE_TYPE="ecto:artifact-close-request";function focusArtifactDocument(){var body=document.body;if(!body)return;try{window.focus();}catch(e){}if(!body.hasAttribute("tabindex"))body.setAttribute("tabindex","-1");try{body.focus({preventScroll:true});}catch(e){try{body.focus();}catch(e2){}}}window.addEventListener("message",function(event){if(event.source!==window.parent)return;var data=event.data;if(!data||typeof data!=="object"||data.type!==FOCUS_TYPE)return;if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",focusArtifactDocument,{once:true});return;}focusArtifactDocument();});window.addEventListener("keydown",function(event){if(event.key!=="Escape")return;window.setTimeout(function(){if(event.defaultPrevented)return;window.parent.postMessage({type:CLOSE_TYPE},"*");},0);});})();</script></body>
+</html>
