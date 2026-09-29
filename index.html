@@ -189,132 +189,78 @@ const TEST_INDEXES=[
   {code:'1.000688',name:'科创50',short:'000688',type:'index'},
 ];
 // ==== 后台测试开关：只测后台，保留东财/腾讯代码但切断前端实时采集 ====
-const BACKEND_ONLY_TEST = false; // 仅东财2日临时数据融合版，按a+b+d=c推导
+const BACKEND_ONLY_TEST = false; // 正式：后台150天 + 前端东财2天现场融合
 const FRONTEND_TEMP_DAYS = 2;
 let SRC='east';
 
-// === 铁律 JS 版 ChipModel，与 fetch-daily.py 完全一致 ===
 function chipModelCompute(bars){
   if(!bars||!bars.length) return {cost50:[],cost75:[],cost90:[],zq1:[],zq:[],vwma10:[]};
   const lows=bars.map(b=>b.low), highs=bars.map(b=>b.high);
   let minP=Math.min(...lows)*0.98, maxP=Math.max(...highs)*1.02;
-  let buckets=300;
-  let step=(maxP-minP)/buckets||1;
-  if(step===0) step=1;
+  let buckets=300; let step=(maxP-minP)/buckets||1; if(step===0) step=1;
   let w=new Array(buckets).fill(0);
   function price_at(i){ return minP + (i+0.5)*step; }
-  function idx_of(p){
-    if(!isFinite(p)) return 0;
-    let i=Math.floor((p-minP)/step);
-    if(i<0) i=0; if(i>=buckets) i=buckets-1;
-    return i;
-  }
-  function percentile(pct){
-    let total=w.reduce((a,b)=>a+b,0);
-    if(total<=0) return null;
-    let target=total*pct/100, acc=0;
-    for(let i=0;i<buckets;i++){ acc+=w[i]; if(acc>=target) return price_at(i); }
-    return price_at(buckets-1);
-  }
-  function winner_below(price){
-    let total=w.reduce((a,b)=>a+b,0);
-    if(total<=0) return null;
-    let idx=idx_of(price);
-    let acc=0; for(let i=0;i<=idx;i++) acc+=w[i];
-    return acc/total*100;
-  }
+  function idx_of(p){ if(!isFinite(p)) return 0; let i=Math.floor((p-minP)/step); if(i<0) i=0; if(i>=buckets) i=buckets-1; return i; }
+  function percentile(pct){ let total=w.reduce((a,b)=>a+b,0); if(total<=0) return null; let target=total*pct/100, acc=0; for(let i=0;i<buckets;i++){ acc+=w[i]; if(acc>=target) return price_at(i); } return price_at(buckets-1); }
+  function winner_below(price){ let total=w.reduce((a,b)=>a+b,0); if(total<=0) return null; let idx=idx_of(price); let acc=0; for(let i=0;i<=idx;i++) acc+=w[i]; return acc/total*100; }
   let cost50=[],cost75=[],cost90=[],zq1=[],zq=[],vwma10=[];
   for(let i=0;i<bars.length;i++){
-    let b=bars[i];
-    let vol=b.vol||0, amount=b.amount||0;
+    let b=bars[i]; let vol=b.vol||0, amount=b.amount||0;
     let avg = b.avg!=null ? b.avg : (amount && vol ? amount/(vol*100) : b.close);
     if(!isFinite(avg)||avg<=0) avg=b.close;
-    let turnover_pct=b.turnover||0;
-    let turnover=Math.max(0,Math.min(1,turnover_pct/100));
+    let turnover_pct=b.turnover||0; let turnover=Math.max(0,Math.min(1,turnover_pct/100));
     if(turnover>0){
-      let decay=1-turnover;
-      for(let k=0;k<buckets;k++) w[k]*=decay;
-      if(b.high<=b.low){
-        w[idx_of(avg)]+=turnover;
-      }else{
-        let i0=idx_of(b.low), i1=idx_of(b.high);
-        let raw=[], s=0;
-        for(let ii=i0;ii<=i1;ii++){
-          let p=price_at(ii);
-          let wt;
-          if(p<=avg) wt=(p-b.low)/(avg-b.low||1);
-          else wt=(b.high-p)/(b.high-avg||1);
-          if(wt<0) wt=0;
-          raw.push(wt); s+=wt;
-        }
-        if(s<=0) w[idx_of(avg)]+=turnover;
-        else{ for(let j=0;j<raw.length;j++){ w[i0+j]+=turnover*raw[j]/s; } }
+      let decay=1-turnover; for(let k=0;k<buckets;k++) w[k]*=decay;
+      if(b.high<=b.low){ w[idx_of(avg)]+=turnover; }
+      else{
+        let i0=idx_of(b.low), i1=idx_of(b.high); let raw=[], s=0;
+        for(let ii=i0;ii<=i1;ii++){ let p=price_at(ii); let wt; if(p<=avg) wt=(p-b.low)/(avg-b.low||1); else wt=(b.high-p)/(b.high-avg||1); if(wt<0) wt=0; raw.push(wt); s+=wt; }
+        if(s<=0) w[idx_of(avg)]+=turnover; else{ for(let j=0;j<raw.length;j++){ w[i0+j]+=turnover*raw[j]/s; } }
       }
     }
-    cost50.push(percentile(50));
-    cost75.push(percentile(75));
-    cost90.push(percentile(90));
-    let win=bars.slice(Math.max(0,i-9),i+1);
-    let sumVol=win.reduce((s,x)=>s+(x.vol||0),0);
-    let vwma=sumVol>0?win.reduce((s,x)=>s+x.close*(x.vol||0),0)/sumVol:b.close;
-    if(!isFinite(vwma)||vwma<=0) vwma=b.close;
-    vwma10.push(vwma);
-    zq1.push(winner_below(vwma));
-    zq.push(winner_below(avg));
+    cost50.push(percentile(50)); cost75.push(percentile(75)); cost90.push(percentile(90));
+    let win=bars.slice(Math.max(0,i-9),i+1); let sumVol=win.reduce((s,x)=>s+(x.vol||0),0);
+    let vwma=sumVol>0?win.reduce((s,x)=>s+x.close*(x.vol||0),0)/sumVol:b.close; if(!isFinite(vwma)||vwma<=0) vwma=b.close;
+    vwma10.push(vwma); zq1.push(winner_below(vwma)); zq.push(winner_below(avg));
   }
   return {cost50,cost75,cost90,zq1,zq,vwma10};
 }
 function enrichBarsWithChip(bars){
   let ind=chipModelCompute(bars);
-  return bars.map((b,i)=>({
-    ...b,
-    avg: b.avg!=null ? b.avg : (b.amount && b.vol ? b.amount/(b.vol*100) : b.close),
-    cost50:ind.cost50[i], cost75:ind.cost75[i], cost90:ind.cost90[i],
-    zq1:ind.zq1[i], zq:ind.zq[i], vwma10:ind.vwma10[i]
-  }));
+  return bars.map((b,i)=>({ ...b, avg: b.avg!=null ? b.avg : (b.amount && b.vol ? b.amount/(b.vol*100) : b.close), cost50:ind.cost50[i], cost75:ind.cost75[i], cost90:ind.cost90[i], zq1:ind.zq1[i], zq:ind.zq[i], vwma10:ind.vwma10[i] }));
 }
-// === 东财2日：a+b+d=c 推导 ===
 async function fetchEastMoney2Days(secid){
-  try{
-    const url=`https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=5&end=20500101&iscca=1&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`;
-    const res=await fetch(url,{cache:'no-store'});
-    if(!res.ok) throw new Error('east http');
-    const js=await res.json();
-    const klines=js?.data?.klines;
-    if(!klines||!klines.length) throw new Error('empty');
-    let out=[];
-    for(let line of klines.slice(-FRONTEND_TEMP_DAYS)){
-      let a=line.split(',');
-      // a = [date, open, close, high, low, vol(手), amount, 振幅, 涨跌幅, 涨跌额, 换手%]
-      let date=a[0];
-      let open=parseFloat(a[1]), close=parseFloat(a[2]), high=parseFloat(a[3]), low=parseFloat(a[4]);
-      let vol=parseFloat(a[5])||0; // c = 手
-      let amount=parseFloat(a[6])||0; // d = 金额
-      let turnover=parseFloat(a[10])||0; // e = 换手%
-      // a+b+d=c 推导链：
-      // 1) 若 amount 缺失，a=vol, b=close => d=amount=vol*100*close
-      if(!amount && vol && close){
-        amount = vol*100*close; // a+b=c
+  const urls=[
+    `https://push2.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=10&end=20500101&iscca=1&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`,
+    `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=10&end=20500101&iscca=1&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`
+  ];
+  for(let url of urls){
+    try{
+      const res=await fetch(url,{cache:'no-store'});
+      if(!res.ok) continue;
+      const js=await res.json();
+      const klines=js?.data?.klines;
+      if(!klines||!klines.length) continue;
+      let out=[];
+      for(let line of klines.slice(-FRONTEND_TEMP_DAYS)){
+        let a=line.split(',');
+        if(a.length<6) continue;
+        let date=a[0]; let open=parseFloat(a[1]), close=parseFloat(a[2]), high=parseFloat(a[3]), low=parseFloat(a[4]);
+        let vol=parseFloat(a[5])||0; let amount=parseFloat(a[6])||0; let turnover=parseFloat(a[10])||0;
+        if(!amount && vol && close) amount=vol*100*close;
+        let avg=(amount && vol) ? amount/(vol*100) : close;
+        if(!isFinite(avg)||avg<=0) avg=close;
+        out.push({date,open,close,high,low,vol,amount,turnover,avg});
       }
-      // 2) avg 推导：a=amount, b=vol => c=avg=amount/(vol*100)
-      let avg = (amount && vol) ? amount/(vol*100) : close;
-      if(!isFinite(avg)||avg<=0) avg=close;
-      // 3) turnover 若缺失，不硬设修正值，保持0，让ChipModel自然不衰减，符合铁律
-      out.push({date,open,close,high,low,vol,amount,turnover,avg});
-    }
-    return out.length?out:null;
-  }catch(e){
-    console.log('east 2day fail',secid,e.message);
-    return null;
+      if(out.length) return out;
+    }catch(e){ continue; }
   }
+  return null;
 }
 function mergeBackendWithFrontend(backendBars, frontBars){
   if(!frontBars||!frontBars.length) return backendBars.slice(-150);
-  let byDate={};
-  for(let b of backendBars) if(b&&b.date) byDate[b.date]=b;
-  for(let b of frontBars) if(b&&b.date){
-    byDate[b.date]={date:b.date,open:b.open,high:b.high,low:b.low,close:b.close,vol:b.vol,amount:b.amount,turnover:b.turnover,avg:b.avg};
-  }
+  let byDate={}; for(let b of backendBars) if(b&&b.date) byDate[b.date]=b;
+  for(let b of frontBars) if(b&&b.date) byDate[b.date]={date:b.date,open:b.open,high:b.high,low:b.low,close:b.close,vol:b.vol,amount:b.amount,turnover:b.turnover,avg:b.avg};
   let merged=Object.keys(byDate).sort().map(d=>byDate[d]);
   merged=merged.slice(-150);
   return enrichBarsWithChip(merged);
@@ -426,21 +372,15 @@ async function getFullHistory(secid, limit=150){
   }));
 }
 const histCache={};
-async function getHistBars(secid, limit){
-  // 1) 后台
+async function getHistBars(secid, limit, forceEast=false){
   let backendBars;
-  if(histCache[secid]) backendBars=JSON.parse(JSON.stringify(histCache[secid]));
+  if(!forceEast && histCache[secid]) backendBars=JSON.parse(JSON.stringify(histCache[secid]));
   else {
-    try{
-      backendBars=await getFullHistory(secid, 150);
-      histCache[secid]=backendBars;
-    }catch(e){
-      backendBars=[];
-    }
+    try{ backendBars=await getFullHistory(secid,150); histCache[secid]=backendBars; }catch(e){ backendBars=[]; }
   }
   let backendSlice=backendBars.slice(-Math.min(limit||60,150));
   if(BACKEND_ONLY_TEST) return JSON.parse(JSON.stringify(backendSlice));
-  // 2) 仅东财2日
+  // 点击自选/指数时强制向东财要2天
   let front=null;
   try{ front=await fetchEastMoney2Days(secid); }catch(e){}
   if(front && front.length){
@@ -666,30 +606,25 @@ async function fillRowQuote(item, row, isUpdating=false){
   if(isUpdating) row.classList.add('updating');
   else { row.classList.add('updating'); setTimeout(()=>row.classList.remove('updating'), 800); }
   try{
-    const bars=await getHistBars(item.code,60);
+    const bars=await getHistBars(item.code,60, true); // 强制东财2天融合
     if(!bars.length) throw new Error('no bars');
     const live=await getLiveQuoteFull(item.code);
     let last=bars[bars.length-1];
     let prev=bars.length>=2?bars[bars.length-2]:null;
-    // a+b+d=c: preClose 不用东财 f60(易错)，用后台上一根 close
     let basePrev = prev ? prev.close : last.close;
-    let pct = prev ? (last.close-prev.close)/prev.close*100 : 0;
+    let pct = prev ? (last.close - prev.close)/prev.close*100 : 0;
     let displayPrice = last.close;
     if(live && live.price){
-      const today=todayStrLocal();
-      const isSameDay=last.date===today;
-      // 用 a=prevClose, b=livePrice => c=pct
+      // a+b=c: pct = (live.price - basePrev)/basePrev*100
       let livePct = (live.price - basePrev)/basePrev*100;
-      // 东财 f170 的 pct 更准，优先用 f170，但 preClose 仍用后台
-      if(Math.abs(live.pct)>0.001 && Math.abs(live.pct)<25) pct=live.pct;
+      if(Math.abs(live.pct)>0.001 && Math.abs(live.pct)<30) pct=live.pct;
       else pct=livePct;
       displayPrice=live.price;
-      if(isSameDay){
+      // 更新当天K，不新增，避免拉大 y 轴
+      const today=todayStrLocal();
+      if(last.date===today){
         last={...last, close:live.price, high:Math.max(last.high, live.high||last.high), low:Math.min(last.low, live.low||last.low), _live:true};
         bars[bars.length-1]=last;
-      } else {
-        // 当天新K，未收盘，用 live 覆盖
-        // 不 push，避免 y 轴被拉大，保持后台+前端2日已融合的 bars
       }
     }
     const priceEl=row.querySelector('.p'); const pctEl=row.querySelector('.pct');
@@ -787,38 +722,33 @@ async function loadDetail(){
   metaEl.textContent='加载中...';
   const isIndex=TEST_INDEXES.some(x=>x.code===item.code);
   try{
-    const bars=await getHistBars(item.code, 150);
+    const bars=await getHistBars(item.code, 150, true); // 点击详情强制东财2天融合
     const liveFull=await getLiveQuoteFull(item.code);
     const trends=await getIntraday(item.code);
     let merged=bars.slice();
     let prevClose=bars.length>=1?bars[bars.length-1].close: (liveFull?liveFull.preClose:null);
-    // 东财 preClose 不可靠，直接用后台 prevClose
-    if(liveFull) liveFull.preClose=prevClose;
+    if(liveFull && liveFull.preClose && Math.abs(liveFull.preClose - liveFull.price)/liveFull.price > 0.3){
+      // 指数昨收异常，丢弃，用上一根
+      liveFull.preClose=prevClose;
+    }
     const today=todayStrLocal();
-    // prevClose 用后台上一根，不用东财 f60，避免 57.84 这种异常
-    prevClose = bars.length>=2?bars[bars.length-2].close: (bars.length>=1?bars[bars.length-1].close:null);
     if(liveFull){
       const isSameDay=merged.length && merged[merged.length-1].date===today;
-      // a+b+d=c: avg = amount/(vol*100) 已在 liveFull 里推导，cost 用后台，不在这里重算
       const liveBar={date:today, open:liveFull.open, close:liveFull.price, high:liveFull.high, low:liveFull.low, vol:liveFull.vol, amount:liveFull.amount, cost50:merged[merged.length-1]?.cost50, cost75:merged[merged.length-1]?.cost75, cost90:merged[merged.length-1]?.cost90, zq1:merged[merged.length-1]?.zq1, zq:merged[merged.length-1]?.zq, _live:true};
       if(isSameDay){ merged[merged.length-1]= {...merged[merged.length-1], ...liveBar}; }
       else { merged.push(liveBar); }
       if(merged.length>150) merged=merged.slice(-150);
+      prevClose=bars.length>=1?bars[bars.length-1].close: liveFull.preClose;
     }
     detailState.bars=merged;
     const last=merged[merged.length-1];
     const prev=merged.length>=2?merged[merged.length-2]:null;
     let pct=0;
-    let basePrev = prev ? prev.close : last.close;
-    if(prev) pct=(last.close-prev.close)/prev.close*100;
-    if(liveFull && liveFull.price){
-      let livePct = (liveFull.price - basePrev)/basePrev*100;
-      // f170 是东财涨跌幅，可信度高，但 preClose 仍用后台 basePrev 推导 pct
-      if(Math.abs(liveFull.pct)>0.001 && Math.abs(liveFull.pct)<25) pct=liveFull.pct;
-      else pct=livePct;
-    }
+    if(liveFull && liveFull.preClose) pct=(liveFull.price-liveFull.preClose)/liveFull.preClose*100;
+    else if(prev) pct=(last.close-prev.close)/prev.close*100;
+    else if(liveFull) pct=liveFull.pct;
     metaEl.textContent=`${last.date}  ${last.open.toFixed(2)}/${last.high.toFixed(2)}/${last.low.toFixed(2)}/${last.close.toFixed(2)}  量${(last.vol||0).toFixed(0)}`;
-    priceEl.innerHTML=`<span>现价 <b class="${pct>=0?'up':'down'}">${(liveFull?liveFull.price:last.close).toFixed(2)}</b></span><span>涨跌 <b class="${pct>=0?'up':'down'}">${pct>=0?'+':''}${pct.toFixed(2)}%</b></span><span>昨收 ${prev?prev.close.toFixed(2):'--'}</span>`;
+    priceEl.innerHTML=`<span>现价 <b class="${pct>=0?'up':'down'}">${(liveFull?liveFull.price:last.close).toFixed(2)}</b></span><span>涨跌 <b class="${pct>=0?'up':'down'}">${pct>=0?'+':''}${pct.toFixed(2)}%</b></span><span>昨收 ${prev?prev.close.toFixed(2):(liveFull?.preClose?liveFull.preClose.toFixed(2):'--')}</span>`;
 
     const costEl=document.getElementById('detail-cost');
     const zqEl=document.getElementById('detail-zq');
