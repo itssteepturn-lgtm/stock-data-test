@@ -21,6 +21,27 @@
 :where(code, pre, kbd, samp) {
   font-family: "Optimistic Mono", ui-monospace, monospace;
 }
+</style><style>
+@font-face {
+  font-family: "Optimistic";
+  font-style: normal;
+  font-weight: 400 600;
+  font-display: swap;
+  src: url("/fonts/OptimisticAI_VF_Optimized.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Optimistic Mono";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("/fonts/OptimisticMono_W_TextRegular.woff2") format("woff2");
+}
+:where(html) {
+  font-family: "Optimistic", system-ui, sans-serif;
+}
+:where(code, pre, kbd, samp) {
+  font-family: "Optimistic Mono", ui-monospace, monospace;
+}
 </style>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
@@ -67,11 +88,23 @@
   .value-tags{display:flex;gap:8px;flex-wrap:wrap;font-size:10px;color:var(--dim);margin:2px 0 6px;}
   .value-tags span{border:1px solid var(--line);border-radius:6px;padding:2px 6px;}
   .hint{font-size:11px;color:var(--dim);text-align:center;padding:10px 0;}
+  .cond-row{display:flex;align-items:center;gap:6px;padding:5px 0;font-size:12px;}
+  .cond-row label.lbl{width:70px;color:var(--dim);flex-shrink:0;}
+  .cond-row select,.cond-row input[type=number],.cond-row input[type=date]{flex:1;background:#0d1117;color:var(--text);border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px;min-width:0;}
+  .btn{font-size:12px;padding:6px 14px;border-radius:8px;background:var(--accent);color:#fff;display:inline-block;cursor:pointer;text-align:center;}
+  .btn.ghost{background:var(--panel);border:1px solid var(--line);color:var(--text);}
+  .btn.danger{background:var(--up);}
+  #sel-results .res-card{border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--panel);margin-bottom:8px;}
+  .cat-bar{display:flex;gap:6px;overflow-x:auto;padding:4px 0 8px;}
+  .cat-bar .pill{white-space:nowrap;}
 </style>
 </head>
 <body>
 <div id="app">
-  <header><h1>盘面 · 正式版 全市场 150天</h1><div id="clock">--:--:--</div></header>
+  <header>
+    <h1>盘面 · 正式版 全市场 150天</h1>
+    <div id="clock">--:--:--</div>
+  </header>
   <div id="data-status" style="font-size:10px;color:var(--dim);margin:-8px 2px 12px;display:flex;justify-content:space-between;align-items:center;gap:8px;">
     <span id="data-status-text">检查中…</span>
     <span style="display:flex;gap:6px;align-items:center;">
@@ -79,57 +112,108 @@
       <span id="data-status-refresh" class="pill" style="padding:2px 8px;">Actions</span>
     </span>
   </div>
+
   <div class="section-label"><span>指数 · 后台150天+当日实时K</span><span style="font-size:10px;color:var(--dim);">点进看分时+K+VOL+MACD</span></div>
   <div id="idx-list"></div>
-  <div class="section-label"><span>自选股 <span id="wl-count"></span></span><span id="edit-toggle" class="pill">编辑</span></div>
-  <div class="cat-bar" id="cat-bar" style="display:flex;gap:6px;overflow-x:auto;padding:4px 0 8px;"></div>
+
+  <div class="section-label"><span>自选股 <span id="wl-count" style="color:var(--dim);"></span></span><span id="edit-toggle" class="pill">编辑</span></div>
+  <div class="cat-bar" id="cat-bar"></div>
   <div id="watch-list"></div>
   <div class="card" style="display:flex;gap:8px;align-items:center;">
-    <input id="add-code" type="tel" placeholder="6位代码" style="flex:1;background:transparent;border:none;color:var(--text);font-size:13px;outline:none;">
+    <input id="add-code" type="tel" inputmode="numeric" placeholder="6位代码，加到当前分类，最新的在最前" style="flex:1;background:transparent;border:none;color:var(--text);font-size:13px;outline:none;">
     <input id="add-cat" type="text" placeholder="分类" style="width:70px;background:#0d1117;border:1px solid var(--line);border-radius:6px;padding:4px 6px;font-size:12px;color:var(--text);">
-    <div id="add-btn" class="btn" style="padding:5px 12px;background:var(--accent);color:#fff;border-radius:8px;cursor:pointer;">添加</div>
+    <div id="add-btn" class="btn" style="padding:5px 12px;">添加</div>
   </div>
   <div id="add-msg" class="hint" style="display:none;"></div>
-</div>
 
-<div id="detail">
-  <div id="detail-inner">
-    <div class="detail-head"><div class="back" id="detail-back">‹</div><div class="title" id="detail-title">--</div><div id="detail-src" class="pill">东财</div></div>
-    <div id="detail-meta" class="hint" style="text-align:left;padding:2px 0 4px;"></div>
-    <div id="detail-price" class="detail-kv"></div>
-    <div id="detail-cost" class="value-tags"></div>
-    <canvas id="chart-main" class="chart main"></canvas>
-    <canvas id="chart-zq" class="chart zq"></canvas>
-    <canvas id="chart-intra" class="chart intra"></canvas>
-    <canvas id="chart-vol" class="chart vol"></canvas>
-    <canvas id="chart-macd" class="chart macd"></canvas>
-    <div id="detail-zq" class="value-tags"></div>
-    <div class="hint">点击K线显示光标，再点返回</div>
+  <div class="section-label" style="margin-top:26px;">选股 · 边选边出 + 暂停 + 涨跌幅排序</div>
+  <div class="card" style="font-size:12px;">
+    <div class="cond-row"><label class="lbl">日期区间</label><input id="sel-date-from" type="date"><span style="color:var(--dim);">至</span><input id="sel-date-to" type="date"></div>
+    <div id="cond-builder"></div>
+    <div style="display:flex;gap:8px;margin-top:10px;">
+      <div id="run-sel-btn" class="btn">开始选股</div>
+      <div id="stop-scan-btn" class="btn ghost" style="display:none;">暂停</div>
+      <div id="run-backtest-btn" class="btn ghost">回测(尾盘买次日)</div>
+    </div>
+    <div id="sel-progress" class="hint"></div>
+  </div>
+  <div id="sel-results"></div>
+  <div id="backtest-results"></div>
+
+  <div id="detail">
+    <div id="detail-inner">
+      <div class="detail-head"><div class="back" id="detail-back">‹</div><div class="title" id="detail-title">--</div><div id="detail-src" class="pill">东财</div></div>
+      <div id="detail-meta" class="hint" style="text-align:left;padding:2px 0 4px;"></div>
+      <div id="detail-price" class="detail-kv"></div>
+      <div id="detail-cost" class="value-tags"></div>
+      <canvas id="chart-main" class="chart main"></canvas>
+      <canvas id="chart-sub" class="chart zq"></canvas>
+      <canvas id="chart-intra" class="chart intra"></canvas>
+      <canvas id="chart-vol" class="chart vol"></canvas>
+      <canvas id="chart-macd" class="chart macd"></canvas>
+      <div id="detail-zq" class="value-tags"></div>
+      <div class="hint" id="detail-hint">点击K线显示光标，再点返回</div>
+    </div>
   </div>
 </div>
 
 <script>
 const DATA_REPO='itssteepturn-lgtm/stock-data-test';
 const DATA_BRANCH='main';
+const TEST_CODES=['300642','300740','002579','002584','003001','301086','600880','002708','600127','600088','688175','301390','603248','688004'];
 const TEST_INDEXES=[
   {code:'1.000001',name:'上证指数',short:'000001',type:'index'},
   {code:'0.399001',name:'深证成指',short:'399001',type:'index'},
   {code:'0.399006',name:'创业板指',short:'399006',type:'index'},
   {code:'1.000688',name:'科创50',short:'000688',type:'index'},
 ];
-let SRC='east';
+// ==== 后台测试开关：只测后台，保留东财/腾讯代码但切断前端实时采集 ====
+const BACKEND_ONLY_TEST = true; // true = 只用后台 data/*.json，不调用东财/腾讯实时接口
+let SRC='east'; // 保留，测试完改回 false 即可恢复
 setInterval(()=>{document.getElementById('clock').textContent=new Date().toLocaleTimeString();},1000);
+function codeToSecid(code){
+  if(/^(6|9)/.test(code)) return '1.'+code;
+  if(/^(0|2|3)/.test(code)) return '0.'+code;
+  if(/^(4|8)/.test(code)) return '0.'+code;
+  return null;
+}
 function todayStrLocal(){const d=new Date();const p=n=>String(n).padStart(2,'0');return `${d.getFullYear()}-${p(d.getMonth()+1)}-${p(d.getDate())}`;}
-function buildStockUrls(code){const t=Date.now();return [`./data/stocks/${code}.json?t=${t}`,`https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/stocks/${code}.json?t=${t}`,`https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/stocks/${code}.json?t=${t}`];}
-function buildIndexUrls(code){const t=Date.now();return [`./data/indices/${code}.json?t=${t}`,`https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/indices/${code}.json?t=${t}`,`https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/indices/${code}.json?t=${t}`,...buildStockUrls(code)];}
-function buildMetaUrls(){const t=Date.now();return [`./data/meta.json?t=${t}`,`https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/meta.json?t=${t}`,`https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/meta.json?t=${t}`];}
+function buildStockUrls(code){
+  const t=Date.now();
+  return [
+    `./data/stocks/${code}.json?t=${t}`,
+    `https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/stocks/${code}.json?t=${t}`,
+    `https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/stocks/${code}.json?t=${t}`
+  ];
+}
+function buildIndexUrls(code){
+  const t=Date.now();
+  return [
+    `./data/indices/${code}.json?t=${t}`,
+    `https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/indices/${code}.json?t=${t}`,
+    `https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/indices/${code}.json?t=${t}`,
+    ...buildStockUrls(code)
+  ];
+}
+function buildMetaUrls(){
+  const t=Date.now();
+  return [
+    `./data/meta.json?t=${t}`,
+    `https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/meta.json?t=${t}`,
+    `https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/meta.json?t=${t}`
+  ];
+}
 async function fetchJsonWithFallback(urls, timeoutMs=3500){
   const ctrls=urls.map(()=>new AbortController());
   const ps=urls.map((url,i)=>{
-    const ctrl=ctrls[i]; const tm=setTimeout(()=>ctrl.abort(),timeoutMs);
+    const ctrl=ctrls[i];
+    const tm=setTimeout(()=>ctrl.abort(),timeoutMs);
     return fetch(url,{cache:'no-store',signal:ctrl.signal}).then(async r=>{
-      clearTimeout(tm); if(!r.ok) throw new Error('http '+r.status); const j=await r.json();
-      ctrls.forEach((c,idx)=>{ if(idx!==i) try{c.abort();}catch(e){} }); return j;
+      clearTimeout(tm);
+      if(!r.ok) throw new Error('http '+r.status);
+      const j=await r.json();
+      ctrls.forEach((c,idx)=>{ if(idx!==i) try{c.abort();}catch(e){} });
+      return j;
     }).catch(e=>{ clearTimeout(tm); throw e; });
   });
   if(Promise.any) return await Promise.any(ps);
@@ -146,7 +230,8 @@ async function getFullHistory(secid, limit=150){
   return bars.slice(-Math.min(limit,150)).map(b=>({
     date:b.date,open:b.open,close:b.close,high:b.high,low:b.low,vol:b.vol||0,amount:b.amount||0,turnover:b.turnover||0,
     avg:b.avg||(b.amount&&b.vol?b.amount/(b.vol*100):b.close),
-    cost50:b.cost50,cost75:b.cost75,cost90:b.cost90,zq1:b.zq1,zq:b.zq,vwma10:b.vwma10
+    cost50:b.cost50,cost75:b.cost75,cost90:b.cost90,zq1:b.zq1,zq:b.zq,vwma10:b.vwma10,
+    _pre:true
   }));
 }
 const histCache={};
@@ -157,105 +242,84 @@ async function getHistBars(secid, limit){
   return JSON.parse(JSON.stringify(bars)).slice(-Math.min(limit,150));
 }
 async function getLiveQuoteFull(secid){
+  if(typeof BACKEND_ONLY_TEST!=='undefined' && BACKEND_ONLY_TEST) return null;
   try{
+    const isIndex=TEST_INDEXES.some(x=>x.code===secid);
     const url=`https://push2.eastmoney.com/api/qt/stock/get?secid=${secid}&fields=f43,f44,f45,f46,f47,f48,f57,f58,f60,f19,f20,f18,f170`;
     const res=await fetch(url,{cache:'no-store'});
     if(!res.ok) throw new Error('east live http');
-    const data=await res.json(); const d=data?.data; if(!d||!d.f43) throw new Error('east live no data');
-    let price=d.f43/100, open=d.f46?d.f46/100:price, high=d.f44?d.f44/100:price, low=d.f45?d.f45/100:price;
-    let vol=d.f47?d.f47/100:0, amount=d.f48||0;
+    const data=await res.json();
+    const d=data?.data; if(!d||!d.f43) throw new Error('east live no data');
+    // 指数的昨收 f60 经常错，用 f19 或缓存
     let preClose=d.f60?d.f60/100:null;
-    if(preClose && price>0 && Math.abs(preClose-price)/price>0.3) preClose=null;
-    if(preClose!==null && preClose<=0) preClose=null;
+    if(isIndex){
+      // 指数用 f19 可能是昨收，或者用 f46? 这里先用 f60 但做合理性检查
+      if(preClose && Math.abs(preClose - d.f43/100)/ (d.f43/100) > 0.3){
+        preClose=null; // 异常，比如 24 vs 1560，丢弃
+      }
+    }
     let pct=0;
-    if(price && preClose) pct=(price-preClose)/preClose*100;
-    else if(d.f170!=null) pct=d.f170/100;
-    return {price,open,high,low,vol,amount,preClose,pct};
+    if(d.f43&&preClose) pct=(d.f43-preClose)/preClose*100;
+    else if(d.f170) pct=d.f170/100; // 东财涨跌幅字段
+    return {
+      price:d.f43/100, open:d.f46/100, high:d.f44/100, low:d.f45/100, vol:d.f47, amount:d.f48,
+      preClose:preClose,
+      pct:pct
+    };
   }catch(e){ return null; }
 }
 async function getIntraday(secid){
+  if(typeof BACKEND_ONLY_TEST!=='undefined' && BACKEND_ONLY_TEST) return [];
   try{
     const url=`https://push2.eastmoney.com/api/qt/stock/trends2/get?secid=${secid}&fields1=f1,f2,f3,f4,f5,f6,f7,f8&fields2=f51,f52,f53,f54&iscr=0&iscca=0`;
     const res=await fetch(url,{cache:'no-store'}); const data=await res.json();
     const trends=data?.data?.trends; if(!trends) return [];
-    return trends.map(t=>{ const a=t.split(','); return {time:a[0].slice(11,16),price:+a[1],avg:+a[2]}; });
+    return trends.map(t=>{ const a=t.split(','); return {time:a[0].slice(11,16),price:+a[1], avg:+a[2]}; });
   }catch(e){ return []; }
 }
-function getUnifiedPreClose(live, barsA){
-  if(!barsA||!barsA.length) return {realPreClose: live?.preClose||null, prevBar:null};
-  const today=todayStrLocal(); const lastA=barsA[barsA.length-1];
-  let prevBar=null;
-  if(lastA.date===today) prevBar=barsA.length>=2?barsA[barsA.length-2]:null;
-  else prevBar=lastA;
-  let realPreClose=live?.preClose||null;
-  if(!realPreClose && prevBar) realPreClose=prevBar.close;
-  if(live && realPreClose && live.price>0 && Math.abs(realPreClose-live.price)/live.price>0.3){
-    realPreClose=prevBar?prevBar.close:realPreClose;
-  }
-  return {realPreClose, prevBar};
-}
-function mergeAB(barsA, live){
-  if(!barsA||!barsA.length) return [];
-  if(!live) return barsA.slice();
-  const today=todayStrLocal(); const lastA=barsA[barsA.length-1];
-  const base={date:today, open:live.open, close:live.price, high:live.high, low:live.low, vol:live.vol, amount:live.amount, _live:true};
-  if(lastA.date===today){
-    const m={...lastA, ...base, high:Math.max(lastA.high, live.high), low:Math.min(lastA.low, live.low), close:live.price, _live:true};
-    m.cost50=lastA.cost50; m.cost75=lastA.cost75; m.cost90=lastA.cost90; m.zq1=lastA.zq1; m.zq=lastA.zq; m.vwma10=lastA.vwma10;
-    const c=barsA.slice(); c[c.length-1]=m; return c;
-  }else{
-    const b={...base, cost50:lastA.cost50, cost75:lastA.cost75, cost90:lastA.cost90, zq1:lastA.zq1, zq:lastA.zq, vwma10:lastA.vwma10};
-    const c=barsA.slice(); c.push(b); return c;
-  }
-}
 function calcMACD(closes){
-  const ema=(arr,period)=>{const k=2/(period+1); let e=[]; let prev=arr[0]; for(let i=0;i<arr.length;i++){ const v=arr[i]; prev=i===0?v:v*k+prev*(1-k); e.push(prev);} return e;};
+  const ema=(arr,period)=>{
+    const k=2/(period+1); let e=[]; let prev=arr[0];
+    for(let i=0;i<arr.length;i++){ const v=arr[i]; prev=i===0?v:v*k+prev*(1-k); e.push(prev);} return e;
+  };
   const ema12=ema(closes,12), ema26=ema(closes,26);
-  const dif=closes.map((_,i)=>ema12[i]-ema26[i]); const dea=ema(dif,9); const macd=dif.map((d,i)=>(d-dea[i])*2);
+  const dif=closes.map((_,i)=>ema12[i]-ema26[i]);
+  const dea=ema(dif,9);
+  const macd=dif.map((d,i)=>(d-dea[i])*2);
   return {dif,dea,macd};
 }
+// ---- 绘制 ----
+// cost颜色：以前 50绿色 75黄色 90红色，都是实线
 const COST_COLORS={50:'#2ea567',75:'#e0b23c',90:'#e5484d'};
-function drawMiniK(canvas, bars){
-  const dpr=window.devicePixelRatio||1; const cssW=canvas.clientWidth||80, cssH=canvas.clientHeight||42;
-  canvas.width=cssW*dpr; canvas.height=cssH*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,cssW,cssH);
-  if(!bars||bars.length<2) return;
-  const show=bars.slice(-60);
-  const highs=show.map(b=>b.high), lows=show.map(b=>b.low);
-  let minL=Math.min(...lows), maxH=Math.max(...highs); let range=maxH-minL||1; const pad=range*0.08; minL-=pad; maxH+=pad; range=maxH-minL;
-  const y=v=>cssH-((v-minL)/range)*cssH;
-  const n=show.length; const rightPad=10; const plotW=cssW-rightPad;
-  const x=i=> n===1?plotW/2 : i/(n-1)*plotW;
-  const bw=Math.max(1, plotW/n*0.55);
-  show.forEach((b,i)=>{
-    const xx=x(i); const oY=y(b.open), cY=y(b.close), hY=y(b.high), lY=y(b.low);
-    const up=b.close>=b.open;
-    ctx.strokeStyle=up?'#e5484d':'#2ea567'; ctx.fillStyle=up?'#e5484d':'#2ea567';
-    ctx.beginPath(); ctx.moveTo(xx,hY); ctx.lineTo(xx,lY); ctx.stroke();
-    const bodyH=Math.max(1, Math.abs(cY-oY));
-    ctx.fillRect(xx-bw/2, Math.min(oY,cY), bw, bodyH||1);
-    if(b._live){ ctx.fillStyle='rgba(255,255,255,0.9)'; ctx.fillRect(xx-bw/2, cssH-12, bw, 2); }
-  });
-}
+
 function drawMain(canvas, bars, costLines, highlightIdx, isIndex=false){
-  const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight;
+  const dpr=window.devicePixelRatio||1;
+  const w=canvas.clientWidth,h=canvas.clientHeight;
   canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
   if(!bars||!bars.length) return;
   const highs=bars.map(b=>b.high), lows=bars.map(b=>b.low);
   let minL=Math.min(...lows), maxH=Math.max(...highs); let pad=(maxH-minL)*0.08||1;
   let minY=minL-pad, maxY=maxH+pad; let range=maxY-minY||1;
   const y=v=>h-((v-minY)/range)*h;
-  const n=bars.length; const rightPad=10; const plotW=w-rightPad;
+  const n=bars.length;
+  // 留右边 8px 边距，保证最新K线看全
+  const rightPad=10;
+  const plotW=w-rightPad;
   const x=i=> (n===1?plotW/2 : i/(n-1)*plotW);
   const bw=Math.max(2, plotW/n*0.6);
+
+  // cost 实线
   if(!isIndex && costLines){
     const order=[50,75,90];
     costLines.forEach((line,li)=>{
-      if(!line) return; const key=order[li];
-      ctx.strokeStyle=COST_COLORS[key]||'#888'; ctx.lineWidth=1; ctx.setLineDash([]);
+      if(!line) return;
+      const key=order[li];
+      ctx.strokeStyle=COST_COLORS[key]||'#888'; ctx.lineWidth=1; ctx.setLineDash([]); // 实线
       ctx.beginPath(); let st=false;
       line.forEach((v,i)=>{ if(v==null) return; const xx=x(i); if(!st){ctx.moveTo(xx,y(v));st=true;} else ctx.lineTo(xx,y(v));}); ctx.stroke();
     });
   }
+
   bars.forEach((b,i)=>{
     const xx=x(i); const oY=y(b.open), cY=y(b.close), hY=y(b.high), lY=y(b.low);
     const up=b.close>=b.open;
@@ -264,34 +328,81 @@ function drawMain(canvas, bars, costLines, highlightIdx, isIndex=false){
     const bodyH=Math.max(1, Math.abs(cY-oY));
     ctx.fillRect(xx-bw/2, Math.min(oY,cY), bw, bodyH||1);
   });
-  if(highlightIdx!=null){ const xx=x(highlightIdx); ctx.strokeStyle='#e6e9ef'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(xx,0); ctx.lineTo(xx,h); ctx.stroke(); ctx.setLineDash([]); }
-}
-function drawZQ(canvas, bars, highlightIdx){
-  const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight; canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
-  if(!bars||!bars.length) return;
-  const zq1=bars.map(b=>b.zq1), zq=bars.map(b=>b.zq);
-  const y=v=>h-(v/100)*h;
-  const n=bars.length; const rightPad=10; const plotW=w-rightPad; const x=i=> i/(n-1)*plotW;
-  [[100,'#3a4250'],[50,'#e5484d'],[0,'#3a4250']].forEach(([v,c])=>{ ctx.strokeStyle=c; ctx.setLineDash(v===50?[]:[3,3]); ctx.beginPath(); ctx.moveTo(0,y(v)); ctx.lineTo(plotW,y(v)); ctx.stroke();}); ctx.setLineDash([]);
-  [[zq1,'#4a90e2'],[zq,'#c46be0']].forEach(([s,c])=>{ if(!s) return; ctx.strokeStyle=c; ctx.lineWidth=1.2; ctx.beginPath(); let st=false; s.forEach((v,i)=>{ if(v==null) return; const xx=x(i); if(!st){ctx.moveTo(xx,y(v));st=true;} else ctx.lineTo(xx,y(v));}); ctx.stroke();});
+
+  // 最新价标签，像分时那样，显示在主图右上角
   const last=bars[bars.length-1];
-  if(last){ ctx.fillStyle='#4a90e2'; ctx.fillText(`zq1 ${last.zq1?last.zq1.toFixed(1)+'%':'--'}`, 4, 12); ctx.fillStyle='#c46be0'; ctx.fillText(`zq ${last.zq?last.zq.toFixed(1)+'%':'--'}`, 70, 12); }
-  if(highlightIdx!=null){ const xx=x(highlightIdx); ctx.strokeStyle='#e6e9ef'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(xx,0); ctx.lineTo(xx,h); ctx.stroke(); ctx.setLineDash([]); }
+  if(last && last._live){
+    const prev=bars.length>=2?bars[bars.length-2]:null;
+    const pct=prev? (last.close-prev.close)/prev.close*100:0;
+    const col=pct>=0?'#e5484d':'#2ea567';
+    ctx.fillStyle=col; ctx.font='11px sans-serif';
+    ctx.fillText(`${last.close.toFixed(2)} ${pct>=0?'+':''}${pct.toFixed(2)}%`, 6, 14);
+  }
+
+  if(highlightIdx!=null){
+    const xx=x(highlightIdx); ctx.strokeStyle='#e6e9ef'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(xx,0); ctx.lineTo(xx,h); ctx.stroke(); ctx.setLineDash([]);
+    // 光标处显示日期和涨跌幅
+    const b=bars[highlightIdx]; if(b){
+      const prev=bars[highlightIdx-1]; const pct=prev? (b.close-prev.close)/prev.close*100:0;
+      const isLive=b._live?' 最新':''; 
+      const txt=`${b.date} ${b.close.toFixed(2)} ${pct>=0?'+':''}${pct.toFixed(2)}%${isLive}`;
+      ctx.fillStyle='#e6e9ef'; ctx.font='10px sans-serif';
+      const tx=Math.min(xx+4, w-120); ctx.fillText(txt, tx, 12);
+    }
+  }
 }
+
+function drawMiniK(canvas, bars){
+  const dpr=window.devicePixelRatio||1;
+  const cssW=canvas.clientWidth||80, cssH=canvas.clientHeight||42;
+  canvas.width=cssW*dpr; canvas.height=cssH*dpr;
+  const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,cssW,cssH);
+  if(!bars||bars.length<2) return;
+  const show=bars.slice(-60);
+  const highs=show.map(b=>b.high), lows=show.map(b=>b.low);
+  let minL=Math.min(...lows), maxH=Math.max(...highs);
+  let range=maxH-minL||1; const pad=range*0.08; minL-=pad; maxH+=pad; range=maxH-minL;
+  const y=v=>cssH-((v-minL)/range)*cssH;
+  const n=show.length; const rightPad=2; const plotW=cssW-rightPad;
+  const x=i=> i/(n-1)*plotW;
+  const bw=Math.max(1, plotW/n*0.55);
+  show.forEach((b,i)=>{
+    const xx=x(i); const oY=y(b.open), cY=y(b.close), hY=y(b.high), lY=y(b.low);
+    const up=b.close>=b.open;
+    ctx.strokeStyle=up?'#e5484d':'#2ea567'; ctx.fillStyle=up?'#e5484d':'#2ea567';
+    ctx.beginPath(); ctx.moveTo(xx,hY); ctx.lineTo(xx,lY); ctx.stroke();
+    const bodyH=Math.max(1, Math.abs(cY-oY));
+    ctx.fillRect(xx-bw/2, Math.min(oY,cY), bw, bodyH||1);
+  });
+}
+
 function drawVOL(canvas, bars, highlightIdx){
   const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight; canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
   if(!bars||!bars.length) return;
   const maxV=Math.max(...bars.map(b=>b.vol||0))*1.2||1;
   const y=v=>h-(v/maxV)*h;
-  const n=bars.length; const rightPad=10; const plotW=w-rightPad; const x=i=> i/(n-1)*plotW; const bw=Math.max(1, plotW/n*0.6);
-  bars.forEach((b,i)=>{ const xx=x(i); const yy=y(b.vol||0); const up=b.close>=b.open; ctx.fillStyle=up?'#e5484d':'#2ea567'; ctx.fillRect(xx-bw/2, yy, bw, h-yy); });
+  const n=bars.length; const rightPad=10; const plotW=w-rightPad;
+  const x=i=> i/(n-1)*plotW;
+  const bw=Math.max(1, plotW/n*0.6);
+  bars.forEach((b,i)=>{
+    const xx=x(i); const yy=y(b.vol||0); const up=b.close>=b.open;
+    ctx.fillStyle=up?'#e5484d':'#2ea567'; ctx.fillRect(xx-bw/2, yy, bw, h-yy);
+  });
   if(highlightIdx!=null){ const xx=x(highlightIdx); ctx.strokeStyle='#e6e9ef'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(xx,0); ctx.lineTo(xx,h); ctx.stroke(); ctx.setLineDash([]); }
 }
-function drawMACD(canvas, bars, highlightIdx){
+function drawZQ(canvas, zq1,zq, highlightIdx){
   const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight; canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
-  if(!bars||!bars.length) return;
-  const closes=bars.map(b=>b.close);
-  const {dif,dea,macd}=calcMACD(closes);
+  if(!zq1||!zq1.length) return;
+  const y=v=>h-(v/100)*h;
+  const n=zq1.length; const rightPad=10; const plotW=w-rightPad;
+  const x=i=> i/(n-1)*plotW;
+  [[100,'#3a4250'],[50,'#e5484d'],[0,'#3a4250']].forEach(([v,c])=>{ ctx.strokeStyle=c; ctx.setLineDash(v===50?[]:[3,3]); ctx.beginPath(); ctx.moveTo(0,y(v)); ctx.lineTo(plotW,y(v)); ctx.stroke();}); ctx.setLineDash([]);
+  [[zq1,'#4a90e2'],[zq,'#c46be0']].forEach(([s,c])=>{ if(!s) return; ctx.strokeStyle=c; ctx.lineWidth=1.2; ctx.beginPath(); let st=false; s.forEach((v,i)=>{ if(v==null) return; const xx=x(i); if(!st){ctx.moveTo(xx,y(v));st=true;} else ctx.lineTo(xx,y(v));}); ctx.stroke();});
+  if(highlightIdx!=null){ const xx=x(highlightIdx); ctx.strokeStyle='#e6e9ef'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(xx,0); ctx.lineTo(xx,h); ctx.stroke(); ctx.setLineDash([]); }
+}
+function drawMACD(canvas, dif,dea,macd, highlightIdx){
+  const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight; canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
+  if(!dif||!dif.length) return;
   const all=[...dif,...dea,...macd]; const max=Math.max(...all), min=Math.min(...all); const range=(max-min)||1; const y=v=>h-((v-min)/range)*h;
   const y0=y(0); ctx.strokeStyle='#3a4250'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(0,y0); ctx.lineTo(w-10,y0); ctx.stroke(); ctx.setLineDash([]);
   const n=dif.length; const rightPad=10; const plotW=w-rightPad; const x=i=> i/(n-1)*plotW;
@@ -303,150 +414,422 @@ function getLimitPct(secid){
   const code=secid.split('.')[1];
   if(code.startsWith('30')||code.startsWith('688')) return 20;
   if(code.startsWith('8')||code.startsWith('4')) return 30;
+  if(code==='000001'||code==='399001'||code==='399006'||code==='000688') return 10;
   return 10;
 }
 function drawIntra(canvas, trends, prevClose, secid){
   const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight; canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
-  if(!trends||!trends.length){ ctx.fillStyle='#8891a0'; ctx.font='11px sans-serif'; ctx.fillText('无分时', w/2-20, h/2); return; }
+  if(!trends||!trends.length) { ctx.fillStyle='#8891a0'; ctx.font='11px sans-serif'; ctx.fillText('无分时', w/2-20, h/2); return; }
   const prices=trends.map(t=>t.price);
   const base=prevClose||prices[0];
+  // 零轴固定在中间，上下固定 10%/20%/30% 根据涨跌幅限制
   const limitPct=getLimitPct(secid);
-  const max=base*(1+limitPct/100), min=base*(1-limitPct/100), range=max-min;
+  const max=base*(1+limitPct/100);
+  const min=base*(1-limitPct/100);
+  const range=max-min;
   const y=v=>h-((v-min)/range)*h;
-  const y0=y(base);
+  const TOTAL_MIN=242;
+  const curCount=trends.length;
+  const y0=y(base); // 零轴在中间
   ctx.strokeStyle='#3a4250'; ctx.setLineDash([3,3]); ctx.beginPath(); ctx.moveTo(0,y0); ctx.lineTo(w,y0); ctx.stroke(); ctx.setLineDash([]);
+  // 上下 10% 20% 30% 刻度线
   [10,20,30].forEach(p=>{
     if(p>limitPct) return;
     const yUp=y(base*(1+p/100)), yDn=y(base*(1-p/100));
     ctx.strokeStyle='#232b36'; ctx.setLineDash([2,4]); ctx.beginPath(); ctx.moveTo(0,yUp); ctx.lineTo(w,yUp); ctx.stroke(); ctx.beginPath(); ctx.moveTo(0,yDn); ctx.lineTo(w,yDn); ctx.stroke(); ctx.setLineDash([]);
     ctx.fillStyle='#4a5568'; ctx.font='9px sans-serif'; ctx.fillText(`+${p}%`, w-28, yUp+3); ctx.fillText(`-${p}%`, w-28, yDn+3);
   });
-  const midX=(120/242)*w;
+  // 上下午分界
+  const midX= (120/242)*w;
   ctx.strokeStyle='#232b36'; ctx.setLineDash([2,4]); ctx.beginPath(); ctx.moveTo(midX,0); ctx.lineTo(midX,h); ctx.stroke(); ctx.setLineDash([]);
   ctx.fillStyle='#4a5568'; ctx.font='9px sans-serif'; ctx.fillText('11:30/13:00', midX+4, 10);
-  const x=i=> i/(242-1)*w;
-  ctx.strokeStyle='#e6e9ef'; ctx.lineWidth=1; ctx.beginPath();
-  trends.forEach((t,i)=>{ const xx=x(i); const yy=y(t.price); if(i===0) ctx.moveTo(xx,yy); else ctx.lineTo(xx,yy); }); ctx.stroke();
+
   const last=prices[prices.length-1]; const col=last>=base?'#e5484d':'#2ea567';
-  ctx.fillStyle=col; ctx.beginPath(); ctx.arc(x(trends.length-1), y(last), 3, 0, Math.PI*2); ctx.fill();
+  ctx.strokeStyle=col; ctx.lineWidth=1.2; ctx.beginPath();
+  trends.forEach((t,i)=>{
+    const xx= (i/(TOTAL_MIN-1))*w;
+    const yy=y(t.price);
+    if(i===0) ctx.moveTo(xx,yy); else ctx.lineTo(xx,yy);
+  });
+  ctx.stroke();
+  if(curCount>0){
+    const lx=(curCount-1)/(TOTAL_MIN-1)*w; const ly=y(last);
+    ctx.fillStyle=col; ctx.beginPath(); ctx.arc(lx,ly,3,0,Math.PI*2); ctx.fill();
+  }
+  const pct=base?((last-base)/base*100):0;
+  ctx.fillStyle=col; ctx.font='11px sans-serif';
+  ctx.fillText(`${last.toFixed(2)} ${pct>=0?'+':''}${pct.toFixed(2)}%`, 6, 14);
 }
+
+// ---- 列表 ----
 function buildRow(item, container, onClick){
   const row=document.createElement('div'); row.className='card idx-row';
-  row.innerHTML=`<div class="idx-name"><div class="n">${item.name||item.short}</div><div class="c">${item.short}</div></div><div class="idx-chart"><canvas class="chart mini"></canvas></div><div class="idx-price"><div class="p">--</div><div class="pct">--</div></div>`;
-  row.onclick=()=>onClick(item,row);
-  container.appendChild(row); return row;
+  row.innerHTML=`<div class="idx-name"><div class="n">${item.name}</div><div class="c">${item.short}</div></div><canvas class="idx-chart mini" width="80" height="42"></canvas><div class="idx-price"><div class="p">--</div><div class="pct">加载中</div></div>`;
+  row.onclick=()=>onClick(item,row); container.appendChild(row); return row;
 }
 async function fillRowQuote(item, row, isUpdating=false){
-  row.classList.add('updating');
-  const removeFlash=()=>setTimeout(()=>row.classList.remove('updating'), 800);
+  if(isUpdating) row.classList.add('updating');
+  else { row.classList.add('updating'); setTimeout(()=>row.classList.remove('updating'), 800); }
   try{
-    const barsA=await getHistBars(item.code,150);
-    if(!barsA.length) throw new Error('no bars');
+    const bars=await getHistBars(item.code,60);
+    if(!bars.length) throw new Error('no bars');
     const live=await getLiveQuoteFull(item.code);
-    let barsC = live ? mergeAB(barsA, live) : barsA.slice();
-    const {realPreClose}=getUnifiedPreClose(live, barsA);
-    const lastC=barsC[barsC.length-1];
+    let last=bars[bars.length-1];
+    let prev=bars.length>=2?bars[bars.length-2]:null;
     let pct=0;
-    if(realPreClose && realPreClose>0) pct=(lastC.close-realPreClose)/realPreClose*100;
-    else if(barsA.length>=2) pct=(lastC.close-barsA[barsA.length-1].close)/barsA[barsA.length-1].close*100;
+    if(prev) pct=(last.close-prev.close)/prev.close*100;
+    if(live && live.preClose){
+      const today=todayStrLocal();
+      const isSameDay=last.date===today;
+      if(isSameDay){
+        last={...last, close:live.price, high:Math.max(last.high, live.high), low:Math.min(last.low, live.low), _live:true};
+        bars[bars.length-1]=last;
+      } else {
+        last={date:today, open:live.open, close:live.price, high:live.high, low:live.low, vol:live.vol, _live:true};
+        bars.push(last);
+      }
+      if(Math.abs(live.pct)>0.001) pct=live.pct;
+      else if(prev) pct=(live.price-prev.close)/prev.close*100;
+      else if(live.preClose) pct=(live.price-live.preClose)/live.preClose*100;
+    } else if(live){
+      // 指数 preClose 异常时，用上一根算
+      const today=todayStrLocal();
+      if(prev){
+        pct=(live.price-prev.close)/prev.close*100;
+      }
+      last={...last, close:live.price, _live:true};
+      bars[bars.length-1]=last;
+    }
     const priceEl=row.querySelector('.p'); const pctEl=row.querySelector('.pct');
-    if(priceEl) priceEl.textContent=lastC.close.toFixed(2);
+    const displayPrice=live?live.price:last.close;
+    if(priceEl) priceEl.textContent=displayPrice.toFixed(2);
     if(pctEl){ pctEl.textContent=(pct>=0?'+':'')+pct.toFixed(2)+'%'; pctEl.className='pct '+(pct>0?'up':pct<0?'down':'flat'); priceEl.className='p '+(pct>0?'up':pct<0?'down':'flat'); }
-    const canvas=row.querySelector('canvas'); if(canvas) drawMiniK(canvas, barsC);
-    row._pct=pct; row._bars=barsC;
-  }catch(e){
-    const priceEl=row.querySelector('.p'); if(priceEl) priceEl.textContent='无数据';
-    const pctEl=row.querySelector('.pct'); if(pctEl) pctEl.textContent='--';
-    console.error('fillRowQuote', item.code, e);
-  }finally{ removeFlash(); }
+    const canvas=row.querySelector('canvas'); if(canvas){ drawMiniK(canvas, bars); }
+    row._pct=pct; row._bars=bars;
+  }catch(e){ const priceEl=row.querySelector('.p'); if(priceEl) priceEl.textContent='无数据'; const pctEl=row.querySelector('.pct'); if(pctEl) pctEl.textContent=e.message.slice(0,12); row._pct=-999; }
+  finally{ setTimeout(()=>row.classList.remove('updating'), 600); }
 }
-function renderIndexList(){
-  const container=document.getElementById('idx-list'); container.innerHTML='';
-  for(const item of TEST_INDEXES){
-    const row=buildRow(item, container, (it)=>openDetail(it));
-    fillRowQuote(item,row);
-  }
-  setInterval(()=>{ document.querySelectorAll('#idx-list .card').forEach((row,i)=>{ const item=TEST_INDEXES[i]; if(item) fillRowQuote(item,row,true); }); }, 8000);
+
+// ---- 自选股分类 ----
+const WL_KEY='stockapp_watchlist_v3_cat';
+function loadWLStore(){
+  try{
+    const raw=JSON.parse(localStorage.getItem(WL_KEY));
+    if(raw && raw.cats) return raw;
+  }catch(e){}
+  const old=localStorage.getItem('stockapp_watchlist_backend150_v2')||localStorage.getItem('stockapp_watchlist_east150_v1');
+  let list=[];
+  if(old){ try{ list=JSON.parse(old);}catch(e){} }
+  if(!list||!list.length){ list=TEST_CODES.map(c=>({code:codeToSecid(c),name:c,short:c,type:'stock'})); }
+  const store={cats:{'默认':list}, active:'默认'};
+  localStorage.setItem(WL_KEY, JSON.stringify(store));
+  return store;
 }
-let wlEditing=false;
-function loadWLStore(){ try{ const s=localStorage.getItem('wl_store_v2'); if(s) return JSON.parse(s); }catch(e){} return {active:'默认', cats:{'默认':[]}}; }
-function saveWLStore(s){ localStorage.setItem('wl_store_v2', JSON.stringify(s)); }
+function saveWLStore(store){ localStorage.setItem(WL_KEY, JSON.stringify(store)); }
+function getActiveCat(){ const s=loadWLStore(); return s.active; }
+function setActiveCat(cat){ const s=loadWLStore(); s.active=cat; saveWLStore(s); renderCatBar(); renderWatchlist(); }
 function getActiveList(){ const s=loadWLStore(); return s.cats[s.active]||[]; }
 function setActiveList(list){ const s=loadWLStore(); s.cats[s.active]=list; saveWLStore(s); }
-function setActiveCat(cat){ const s=loadWLStore(); s.active=cat; saveWLStore(s); renderCatBar(); renderWatchlist(); }
 function renderCatBar(){
   const s=loadWLStore(); const bar=document.getElementById('cat-bar'); bar.innerHTML='';
   Object.keys(s.cats).forEach(cat=>{
-    const pill=document.createElement('div'); pill.className='pill '+(cat===s.active?'active':''); pill.textContent=cat+'('+(s.cats[cat].length)+')';
-    pill.onclick=()=>setActiveCat(cat); bar.appendChild(pill);
+    const pill=document.createElement('div'); pill.className='pill '+(cat===s.active?'active':''); pill.textContent=cat+'('+ (s.cats[cat].length) +')';
+    pill.onclick=()=>setActiveCat(cat);
+    bar.appendChild(pill);
   });
   const add=document.createElement('div'); add.className='pill'; add.textContent='+ 新分类'; add.onclick=()=>{
     const name=prompt('分类名'); if(!name) return; const st=loadWLStore(); if(st.cats[name]) return alert('已存在'); st.cats[name]=[]; st.active=name; saveWLStore(st); renderCatBar(); renderWatchlist();
   }; bar.appendChild(add);
 }
+let wlEditing=false;
 function renderWatchlist(){
   const container=document.getElementById('watch-list'); container.innerHTML='';
   const list=getActiveList();
   document.getElementById('wl-count').textContent=`(${list.length})`;
   list.forEach(item=>{
-    const row=buildRow(item, container, (it)=>openDetail(it));
+    const row=buildRow(item, container, (it,r)=>openDetail(it));
     fillRowQuote(item,row);
     if(wlEditing){
-      const del=document.createElement('div'); del.textContent='删'; del.style.cssText='margin-left:6px;background:#e5484d;color:#fff;padding:2px 6px;border-radius:6px;cursor:pointer;'; del.onclick=(e)=>{ e.stopPropagation(); const st=loadWLStore(); st.cats[st.active]=st.cats[st.active].filter(x=>x.code!==item.code); saveWLStore(st); renderCatBar(); renderWatchlist(); }; row.appendChild(del);
+      const del=document.createElement('div'); del.className='btn danger'; del.style.marginLeft='6px'; del.textContent='删'; del.onclick=(e)=>{ e.stopPropagation(); const st=loadWLStore(); st.cats[st.active]=st.cats[st.active].filter(x=>x.code!==item.code); saveWLStore(st); renderCatBar(); renderWatchlist(); };
+      row.appendChild(del);
     }
   });
+  const sortBtn=document.createElement('div'); sortBtn.className='pill'; sortBtn.style.marginTop='6px'; sortBtn.textContent='按涨跌幅排序'; sortBtn.onclick=()=>{
+    const rows=Array.from(container.children).filter(el=>el._pct!=null);
+    rows.sort((a,b)=>b._pct-a._pct);
+    rows.forEach(r=>container.appendChild(r));
+  };
+  container.appendChild(sortBtn);
 }
 document.getElementById('edit-toggle').onclick=()=>{ wlEditing=!wlEditing; document.getElementById('edit-toggle').textContent=wlEditing?'完成':'编辑'; renderWatchlist(); };
 document.getElementById('add-btn').onclick=()=>{
-  const codeInput=document.getElementById('add-code').value.trim(); const catInput=document.getElementById('add-cat').value.trim()||loadWLStore().active;
-  if(!/^\d{6}$/.test(codeInput)){ document.getElementById('add-msg').style.display='block'; document.getElementById('add-msg').textContent='请输入6位代码'; return; }
-  const secid=codeInput.startsWith('6')||codeInput.startsWith('5')||codeInput.startsWith('9')||codeInput.startsWith('688')?'1.'+codeInput:'0.'+codeInput;
-  const item={code:secid, short:codeInput, name:codeInput};
-  const st=loadWLStore(); if(!st.cats[catInput]) st.cats[catInput]=[]; st.cats[catInput]=[item, ...st.cats[catInput].filter(x=>x.code!==secid)]; st.active=catInput; saveWLStore(st);
+  const code=document.getElementById('add-code').value.trim(); const cat=document.getElementById('add-cat').value.trim()||getActiveCat();
+  if(!/^\d{6}$/.test(code)) return alert('6位代码');
+  const secid=codeToSecid(code); if(!secid) return alert('代码无效');
+  const st=loadWLStore(); if(!st.cats[cat]) st.cats[cat]=[];
+  if(st.cats[cat].some(x=>x.short===code)) return alert('已存在');
+  st.cats[cat].unshift({code:secid,name:code,short:code,type:'stock'}); st.active=cat; saveWLStore(st);
   document.getElementById('add-code').value=''; renderCatBar(); renderWatchlist();
 };
 
-let detailState={item:null, bars:[], realPreClose:null};
-function openDetail(item){ detailState.item=item; document.getElementById('detail-title').textContent=(item.name||'')+' '+item.short; document.getElementById('detail').classList.add('open'); loadDetail(); }
+async function renderIndexList(){
+  const container=document.getElementById('idx-list'); container.innerHTML='';
+  for(const item of TEST_INDEXES){
+    const row=buildRow(item, container, (it,r)=>openDetail(it));
+    fillRowQuote(item,row);
+  }
+  setInterval(()=>{ document.querySelectorAll('#idx-list .card').forEach((row,i)=>{ const item=TEST_INDEXES[i]; if(item) fillRowQuote(item,row,true); }); }, 5000);
+}
+
+let detailState={item:null, bars:[], cursorIdx:null};
+function openDetail(item){
+  detailState.item=item; document.getElementById('detail-title').textContent=item.name+' '+item.short; document.getElementById('detail').classList.add('open');
+  loadDetail();
+}
 document.getElementById('detail-back').onclick=()=>{ document.getElementById('detail').classList.remove('open'); };
 async function loadDetail(){
   const item=detailState.item; if(!item) return;
-  const metaEl=document.getElementById('detail-meta'); metaEl.textContent='加载中...';
+  const metaEl=document.getElementById('detail-meta');
+  const priceEl=document.getElementById('detail-price');
+  metaEl.textContent='加载中...';
   const isIndex=TEST_INDEXES.some(x=>x.code===item.code);
   try{
-    const barsA=await getHistBars(item.code, 150);
+    const bars=await getHistBars(item.code, 150);
     const liveFull=await getLiveQuoteFull(item.code);
     const trends=await getIntraday(item.code);
-    let merged = liveFull ? mergeAB(barsA, liveFull) : barsA.slice();
-    if(merged.length>150) merged=merged.slice(-150);
-    const {realPreClose}=getUnifiedPreClose(liveFull, barsA);
-    detailState.bars=merged; detailState.realPreClose=realPreClose;
+    let merged=bars.slice();
+    let prevClose=bars.length>=1?bars[bars.length-1].close: (liveFull?liveFull.preClose:null);
+    if(liveFull && liveFull.preClose && Math.abs(liveFull.preClose - liveFull.price)/liveFull.price > 0.3){
+      // 指数昨收异常，丢弃，用上一根
+      liveFull.preClose=prevClose;
+    }
+    const today=todayStrLocal();
+    if(liveFull){
+      const isSameDay=merged.length && merged[merged.length-1].date===today;
+      const liveBar={date:today, open:liveFull.open, close:liveFull.price, high:liveFull.high, low:liveFull.low, vol:liveFull.vol, amount:liveFull.amount, cost50:merged[merged.length-1]?.cost50, cost75:merged[merged.length-1]?.cost75, cost90:merged[merged.length-1]?.cost90, zq1:merged[merged.length-1]?.zq1, zq:merged[merged.length-1]?.zq, _live:true};
+      if(isSameDay){ merged[merged.length-1]= {...merged[merged.length-1], ...liveBar}; }
+      else { merged.push(liveBar); }
+      if(merged.length>150) merged=merged.slice(-150);
+      prevClose=bars.length>=1?bars[bars.length-1].close: liveFull.preClose;
+    }
+    detailState.bars=merged;
     const last=merged[merged.length-1];
+    const prev=merged.length>=2?merged[merged.length-2]:null;
     let pct=0;
-    if(realPreClose && realPreClose>0) pct=(last.close-realPreClose)/realPreClose*100;
-    else if(merged.length>=2) pct=(last.close-merged[merged.length-2].close)/merged[merged.length-2].close*100;
-    metaEl.textContent=`${last.date} ${last._live?'·实时':''}  ${pct>=0?'+':''}${pct.toFixed(2)}%  prev=${realPreClose?realPreClose.toFixed(2):'--'}  ${isIndex?'指数无cost':'cost沿用上一根'}`;
-    const showK=merged.slice(-60);
-    const costLines=!isIndex?[showK.map(b=>b.cost50), showK.map(b=>b.cost75), showK.map(b=>b.cost90)]:null;
-    drawMain(document.getElementById('chart-main'), showK, costLines, null, isIndex);
-    drawZQ(document.getElementById('chart-zq'), showK);
-    drawVOL(document.getElementById('chart-vol'), showK);
-    drawMACD(document.getElementById('chart-macd'), showK);
-    drawIntra(document.getElementById('chart-intra'), trends, realPreClose, item.code);
-    const priceTag=document.getElementById('detail-price');
-    if(priceTag){ priceTag.textContent=`${last.close.toFixed(2)} ${pct>=0?'+':''}${pct.toFixed(2)}% ${last._live?'实时':''}`; priceTag.className=pct>0?'up':pct<0?'down':'flat'; }
-    const costTag=document.getElementById('detail-cost');
-    if(costTag && !isIndex && last.cost50){ costTag.innerHTML=`<span style="color:#2ea567">cost50 ${last.cost50.toFixed(2)}</span><span style="color:#e0b23c">cost75 ${last.cost75.toFixed(2)}</span><span style="color:#e5484d">cost90 ${last.cost90.toFixed(2)}</span>`; }
-    const zqTag=document.getElementById('detail-zq');
-    if(zqTag && last.zq!=null){ zqTag.innerHTML=`<span style="color:#4a90e2">zq1 ${last.zq1?last.zq1.toFixed(1)+'%':'--'}</span><span style="color:#c46be0">zq ${last.zq?last.zq.toFixed(1)+'%':'--'}</span>`; }
-  }catch(e){
-    metaEl.textContent='加载失败 '+e.message;
-    console.error(e);
-  }
+    if(liveFull && liveFull.preClose) pct=(liveFull.price-liveFull.preClose)/liveFull.preClose*100;
+    else if(prev) pct=(last.close-prev.close)/prev.close*100;
+    else if(liveFull) pct=liveFull.pct;
+    metaEl.textContent=`${last.date}  ${last.open.toFixed(2)}/${last.high.toFixed(2)}/${last.low.toFixed(2)}/${last.close.toFixed(2)}  量${(last.vol||0).toFixed(0)}`;
+    priceEl.innerHTML=`<span>现价 <b class="${pct>=0?'up':'down'}">${(liveFull?liveFull.price:last.close).toFixed(2)}</b></span><span>涨跌 <b class="${pct>=0?'up':'down'}">${pct>=0?'+':''}${pct.toFixed(2)}%</b></span><span>昨收 ${prev?prev.close.toFixed(2):(liveFull?.preClose?liveFull.preClose.toFixed(2):'--')}</span>`;
+
+    const costEl=document.getElementById('detail-cost');
+    const zqEl=document.getElementById('detail-zq');
+    if(isIndex){
+      costEl.innerHTML=`<span style="color:var(--dim)">指数不显示cost/zq</span>`;
+      zqEl.innerHTML='';
+    } else {
+      costEl.innerHTML=`<span style="color:${COST_COLORS[50]}">cost50 <b style="color:${COST_COLORS[50]}">${last.cost50?last.cost50.toFixed(2):'--'}</b></span><span style="color:${COST_COLORS[75]}">cost75 <b style="color:${COST_COLORS[75]}">${last.cost75?last.cost75.toFixed(2):'--'}</b></span><span style="color:${COST_COLORS[90]}">cost90 <b style="color:${COST_COLORS[90]}">${last.cost90?last.cost90.toFixed(2):'--'}</b></span>`;
+      zqEl.innerHTML=`<span style="color:#4a90e2">zq1 <b style="color:#4a90e2">${last.zq1!=null?last.zq1.toFixed(1)+'%':'--'}</b></span><span style="color:#c46be0">zq <b style="color:#c46be0">${last.zq!=null?last.zq.toFixed(1)+'%':'--'}</b></span><span>昨收 ${prev?prev.close.toFixed(2):'--'}</span>`;
+    }
+
+    const costLines=isIndex?[]:[merged.map(b=>b.cost50), merged.map(b=>b.cost75), merged.map(b=>b.cost90)];
+    const closes=merged.map(b=>b.close);
+    const macd=calcMACD(closes);
+    const toShow=merged.slice(-60);
+    const sliceCost=costLines.map(l=>l.slice(-60));
+    drawMain(document.getElementById('chart-main'), toShow, sliceCost, detailState.cursorIdx, isIndex);
+    if(isIndex){
+      document.getElementById('chart-sub').style.display='none';
+    } else {
+      document.getElementById('chart-sub').style.display='block';
+      drawZQ(document.getElementById('chart-sub'), toShow.map(b=>b.zq1), toShow.map(b=>b.zq), detailState.cursorIdx);
+    }
+    drawIntra(document.getElementById('chart-intra'), trends, prevClose|| (prev?prev.close: last.close), item.code);
+    drawVOL(document.getElementById('chart-vol'), toShow, detailState.cursorIdx);
+    drawMACD(document.getElementById('chart-macd'), macd.dif.slice(-60), macd.dea.slice(-60), macd.macd.slice(-60), detailState.cursorIdx);
+  }catch(e){ metaEl.textContent='加载失败 '+e.message; }
 }
+document.getElementById('chart-main').onclick=(e)=>{
+  const canvas=e.target; const rect=canvas.getBoundingClientRect(); const x=e.clientX-rect.left;
+  const n=detailState.bars.slice(-60).length; const idx=Math.round(x/(canvas.clientWidth-10)*(n-1));
+  if(detailState.cursorIdx===idx){ detailState.cursorIdx=null; }
+  else { detailState.cursorIdx=idx; }
+  loadDetail();
+};
+
+// ---- 选股 ----
+let condId=0;
+const condTypes=[
+  {k:'close_above_cost50', label:'收盘>cost50'},
+  {k:'close_above_cost75', label:'收盘>cost75'},
+  {k:'zq_gt', label:'zq >', hasVal:true},
+  {k:'zq1_gt', label:'zq1 >', hasVal:true},
+  {k:'pct_gt', label:'涨幅 >%', hasVal:true},
+];
+function addCondRow(){
+  const wrap=document.getElementById('cond-builder');
+  const id=condId++;
+  const row=document.createElement('div'); row.className='cond-row';
+  row.innerHTML=`<select id="cond-type-${id}">${condTypes.map(t=>`<option value="${t.k}">${t.label}</option>`).join('')}</select><input id="cond-val-${id}" type="number" placeholder="值" style="width:70px;display:none;"><div class="btn ghost" style="padding:2px 8px;">删</div>`;
+  const sel=row.querySelector('select'); const inp=row.querySelector('input'); const del=row.querySelector('.btn');
+  sel.onchange=()=>{ const tp=condTypes.find(t=>t.k===sel.value); inp.style.display=tp.hasVal?'':'none'; };
+  del.onclick=()=>row.remove();
+  wrap.appendChild(row);
+}
+for(let i=0;i<2;i++) addCondRow();
+function readConditionSettings(){
+  const rows=document.querySelectorAll('#cond-builder .cond-row');
+  const conds=[];
+  rows.forEach(r=>{
+    const sel=r.querySelector('select'); const inp=r.querySelector('input');
+    if(!sel) return;
+    conds.push({k:sel.value, v: inp.value?parseFloat(inp.value):null});
+  });
+  return conds;
+}
+function hasAnyActiveFilter(s){ return s&&s.length>0; }
+function evalSelectionAt(entry, settings, idx){
+  const b=entry.bars[idx];
+  for(const c of settings){
+    if(c.k==='close_above_cost50' && !(b.close>b.cost50)) return false;
+    if(c.k==='close_above_cost75' && !(b.close>b.cost75)) return false;
+    if(c.k==='zq_gt' && !(b.zq>c.v)) return false;
+    if(c.k==='zq1_gt' && !(b.zq1>c.v)) return false;
+    if(c.k==='pct_gt'){
+      const prev=entry.bars[idx-1]; if(!prev) return false;
+      const pct=(b.close-prev.close)/prev.close*100; if(!(pct>c.v)) return false;
+    }
+  }
+  return true;
+}
+function scanDateRange(entry, settings, fromDate, toDate){
+  const hits=[];
+  entry.bars.forEach((b,i)=>{
+    if(fromDate && b.date<fromDate) return;
+    if(toDate && b.date>toDate) return;
+    if(evalSelectionAt(entry, settings, i)) hits.push(b.date);
+  });
+  return hits;
+}
+function backtestEntry(entry, settings, fromDate, toDate){
+  const trades=[];
+  for(let i=0;i<entry.bars.length-1;i++){
+    const b=entry.bars[i];
+    if(fromDate && b.date<fromDate) continue;
+    if(toDate && b.date>toDate) continue;
+    if(evalSelectionAt(entry, settings, i)){
+      const buy=b.close; const sell=entry.bars[i+1].close; const ret=(sell-buy)/buy*100;
+      trades.push({date:b.date, ret});
+    }
+  }
+  return trades;
+}
+function estimateNeededBars(fromDate){
+  if(!fromDate) return 150;
+  const diff=(new Date()-new Date(fromDate))/86400000;
+  return Math.min(150, Math.ceil(diff)+20);
+}
+async function poolRun(items, fn, concurrency=20, onProgress){
+  let idx=0, done=0;
+  const run=async()=>{
+    while(idx<items.length){
+      const cur=idx++; const it=items[cur];
+      try{ await fn(it); }catch(e){}
+      done++; if(onProgress) onProgress(done, items.length);
+    }
+  };
+  await Promise.all(Array.from({length:concurrency},run)); if(onProgress) onProgress(done,items.length);
+}
+async function getFullMarketList(){
+  try{
+    const urls=[
+      `./data/stock_list.json?t=${Date.now()}`,
+      `https://cdn.jsdelivr.net/gh/${DATA_REPO}@${DATA_BRANCH}/data/stock_list.json?t=${Date.now()}`,
+      `https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/data/stock_list.json?t=${Date.now()}`
+    ];
+    const j = await fetchJsonWithFallback(urls, 4000);
+    if(Array.isArray(j) && j.length>100) return j;
+  }catch(e){}
+  return TEST_CODES.map(c=>{ const secid=codeToSecid(c); return {code:secid,name:c,short:c,type:'stock'}; });
+}
+let scanCancelled=false;
+document.getElementById('run-sel-btn').onclick=async()=>{
+  const settings=readConditionSettings();
+  const fromDate=document.getElementById('sel-date-from').value||null;
+  const toDate=document.getElementById('sel-date-to').value||null;
+  const resultsEl=document.getElementById('sel-results');
+  const progEl=document.getElementById('sel-progress');
+  if(!hasAnyActiveFilter(settings)){ progEl.textContent='至少设置一个条件'; return; }
+  resultsEl.innerHTML=''; progEl.textContent='读取清单...';
+  let list=await getFullMarketList();
+  scanCancelled=false; document.getElementById('stop-scan-btn').style.display='block';
+  progEl.textContent=`正在扫描 0/${list.length}...`;
+  const needed=estimateNeededBars(fromDate);
+  let matchRows=[]; const MAX_ROWS=300;
+  await poolRun(list, async (item)=>{
+    if(scanCancelled) return;
+    try{
+      const bars=await getHistBars(item.code, needed);
+      const entry={bars,cost50:bars.map(b=>b.cost50),cost75:bars.map(b=>b.cost75),cost90:bars.map(b=>b.cost90),zq1:bars.map(b=>b.zq1),zq:bars.map(b=>b.zq)};
+      let dates=null;
+      if(fromDate||toDate){ const hits=scanDateRange(entry, settings, fromDate, toDate); if(hits.length) dates=hits; }
+      else{ if(evalSelectionAt(entry, settings, entry.bars.length-1)) dates=[entry.bars[entry.bars.length-1].date]; }
+      if(dates){
+        const last=entry.bars[entry.bars.length-1]; const prev=entry.bars.length>=2?entry.bars[entry.bars.length-2]:null; const pct=prev?(last.close-prev.close)/prev.close*100:0;
+        matchRows.push({item,dates,pct,entry});
+        matchRows.sort((a,b)=>b.pct-a.pct);
+        resultsEl.innerHTML='';
+        matchRows.slice(0,MAX_ROWS).forEach(({item,dates,pct,entry})=>{
+          const div=document.createElement('div'); div.className='res-card';
+          div.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:center;">
+            <div><b>${item.name}</b> ${item.short} <span class="${pct>0?'up':pct<0?'down':'flat'}" style="margin-left:6px;">${pct>=0?'+':''}${pct.toFixed(2)}%</span> <span style="color:var(--dim);font-size:10px;">命中:${dates.join(',')}</span></div>
+            <div class="btn ghost" style="padding:4px 10px;">+自选</div>
+          </div>
+          <div style="display:flex;gap:8px;margin-top:6px;">
+            <canvas class="chart" style="height:90px;flex:1;"></canvas>
+            <canvas class="chart small" style="height:90px;flex:0.6;"></canvas>
+          </div>`;
+          const canvases=div.querySelectorAll('canvas');
+          drawMain(canvases[0], entry.bars.slice(-60), [entry.cost50.slice(-60),entry.cost75.slice(-60),entry.cost90.slice(-60)], null, false);
+          drawZQ(canvases[1], entry.zq1.slice(-60), entry.zq.slice(-60));
+          div.querySelector('.btn').onclick=()=>{
+            const store=loadWLStore(); const cat=store.active; if(!store.cats[cat].some(x=>x.code===item.code)){ store.cats[cat].unshift({code:item.code,name:item.name,short:item.short,type:'stock'}); saveWLStore(store); renderCatBar(); renderWatchlist(); }
+          };
+          div.onclick=(e)=>{ if(e.target.classList.contains('btn')) return; openDetail(item); };
+          resultsEl.appendChild(div);
+        });
+      }
+    }catch(e){}
+  }, 20, (done,total)=>{ progEl.textContent=`正在扫描 ${done}/${total}... 已找到${matchRows.length}只`; });
+  document.getElementById('stop-scan-btn').style.display='none';
+  if(matchRows.length===0) resultsEl.innerHTML='<div class="hint">没有符合条件的</div>';
+};
+document.getElementById('stop-scan-btn').onclick=()=>{ scanCancelled=true; document.getElementById('stop-scan-btn').style.display='none'; };
+document.getElementById('run-backtest-btn').onclick=async()=>{
+  const settings=readConditionSettings();
+  const fromDate=document.getElementById('sel-date-from').value||null;
+  const toDate=document.getElementById('sel-date-to').value||null;
+  const resultsEl=document.getElementById('backtest-results');
+  if(!hasAnyActiveFilter(settings)){ resultsEl.innerHTML='<div class="hint">至少设置一个条件</div>'; return; }
+  resultsEl.innerHTML='<div class="hint">回测中...</div>';
+  let list=await getFullMarketList();
+  const needed=fromDate?estimateNeededBars(fromDate):150;
+  let allTrades=[]; let perStock=[];
+  await poolRun(list, async (item)=>{
+    try{
+      const bars=await getHistBars(item.code, needed);
+      const entry={bars, cost50:bars.map(b=>b.cost50), cost75:bars.map(b=>b.cost75), cost90:bars.map(b=>b.cost90), zq1:bars.map(b=>b.zq1), zq:bars.map(b=>b.zq)};
+      const trades=backtestEntry(entry, settings, fromDate, toDate);
+      if(trades.length){ perStock.push({item,trades}); allTrades=allTrades.concat(trades); }
+    }catch(e){}
+  }, 20);
+  if(!allTrades.length){ resultsEl.innerHTML='<div class="hint">没有触发</div>'; return; }
+  const win=allTrades.filter(t=>t.ret>0).length; const avg=allTrades.reduce((s,t)=>s+t.ret,0)/allTrades.length;
+  resultsEl.innerHTML=`<div class="card"><b>回测汇总</b> 共${allTrades.length}次 涉及${perStock.length}只 胜率${(win/allTrades.length*100).toFixed(1)}% 平均${avg>=0?'+':''}${avg.toFixed(2)}% （默认尾盘买次日收盘卖）</div>`;
+};
 async function checkDataStatus(){
   const el=document.getElementById('data-status-text');
-  el.textContent='正式版 全市场 150天 同域+jsDelivr加速';
+  if(typeof BACKEND_ONLY_TEST!=='undefined' && BACKEND_ONLY_TEST){ el.textContent='后台测试模式：仅后台150天，不调用东财/腾讯实时'; } else { el.textContent='正式版 全市场 150天 同域+jsDelivr加速 01:00起每45分钟'; }
   try{
     const meta=await fetchJsonWithFallback(buildMetaUrls(),3500);
     const timeStr=meta.ranAt?new Date(meta.ranAt).toLocaleString():'--';
@@ -455,13 +838,18 @@ async function checkDataStatus(){
 }
 document.getElementById('data-status-refresh').onclick=()=>{ window.open(`https://github.com/${DATA_REPO}/actions`, '_blank'); };
 document.getElementById('src-toggle').onclick=()=>{
+  if(typeof BACKEND_ONLY_TEST!=='undefined' && BACKEND_ONLY_TEST){ alert('后台测试模式：已切断东财/腾讯实时，改 BACKEND_ONLY_TEST=false 恢复'); return; }
   SRC=SRC==='east'?'tencent':'east';
   document.getElementById('src-toggle').textContent=SRC==='east'?'东财':'腾讯';
   document.getElementById('detail-src').textContent=SRC==='east'?'东财':'腾讯';
   if(detailState.item) loadDetail();
 };
 document.getElementById('detail-src').onclick=()=>{ document.getElementById('src-toggle').click(); };
-renderCatBar(); renderIndexList(); renderWatchlist(); checkDataStatus();
+
+renderCatBar();
+renderIndexList();
+renderWatchlist();
+checkDataStatus();
 </script>
-<script>(function(){var loc=location.href.replace(/#.*$/,"");var ATTR_NAMES=["data-product-id","data-productid","data-product_id","product-id","productid","product_id","data-source-entity-id","source-entity-id","source_entity_id","data-product","data-metadata","data-meta"];var DATASET_KEYS=["productId","productid","product_id","sourceEntityId","sourceentityid","source_entity_id","product","metadata","meta"];function readProductId(value){if(typeof value!=="string"||value.length===0)return null;if(/^[0-9]{6,}$/.test(value))return value;var match=value.match(/(?:product(?:_|-)?id|source(?:_|-)?entity(?:_|-)?id)["'=:\s]+([0-9]{6,})/i);return match?match[1]:null}function extractProductId(start){for(var node=start;node&&node!==document.body;node=node.parentElement){for(var i=0;i<ATTR_NAMES.length;i++){var attrValue=node.getAttribute&&node.getAttribute(ATTR_NAMES[i]);var attrProductId=readProductId(attrValue);if(attrProductId)return attrProductId}var dataset=node.dataset||null;if(dataset){for(var j=0;j<DATASET_KEYS.length;j++){var dataValue=dataset[DATASET_KEYS[j]];var dataProductId=readProductId(dataValue);if(dataProductId)return dataProductId}}}return null}function isInlineMediaSlotElement(node){return !!(node&&node.getAttribute&&node.getAttribute("data-clippy-inline-media-slot")!==null)}function findInlineMediaSlot(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(isInlineMediaSlotElement(node))return node}return null}function readInlineMediaUrl(node){if(!node)return null;return node.getAttribute&&((node.getAttribute("data-clippy-inline-media-url")||node.getAttribute("data-url")||node.getAttribute("data_url")))||node.href||null}function stripHash(url){return String(url).replace(/#.*$/,"")}function urlsMatch(a,b){if(!a||!b)return false;try{return stripHash(new URL(a,loc).href)===stripHash(new URL(b,loc).href)}catch(_){return stripHash(a)===stripHash(b)}}function isFirstPartyReelUrl(value){try{var url=new URL(value,loc);if(url.protocol!=="https:")return false;var host=url.hostname.toLowerCase();var supported=host==="instagram.com"||host.endsWith(".instagram.com")||host==="facebook.com"||host.endsWith(".facebook.com");return supported&&/\/reels?\//i.test(url.pathname)}catch(_){return false}}function isInlineMediaUrlClick(node,href){var slot=findInlineMediaSlot(node);if(!slot)return false;var slotUrl=readInlineMediaUrl(slot);if(slotUrl)return urlsMatch(href,slotUrl);return isFirstPartyReelUrl(href)}function findDataHref(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(node.getAttribute){var href=node.getAttribute("data-href")||node.getAttribute("data-url");if(href)return{href:href,node:node}}}return null}var nativeOpen=window.open;window.open=function(url){if(parent!==window&&typeof url==="string"&&/^https?:\/\//.test(url)){parent.postMessage({type:"ecto:usercontent-link-click",href:url},"*");return null}return nativeOpen?nativeOpen.apply(window,arguments):null};document.addEventListener("click",function(e){var target=e.target instanceof Element?e.target:null;if(!target)return;if(parent===window)return;var a=target.closest?target.closest("a[href]"):null;if(a&&a.href&&/^https?:\/\//.test(a.href)&&a.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(a,a.href))return;var productId=extractProductId(target)||extractProductId(a);if(productId){e.preventDefault();parent.postMessage({type:"ecto-artifact-link-click",productId:productId},"*");return}e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:a.href},"*");return}var dataHref=findDataHref(target);if(dataHref&&/^https?:\/\//.test(dataHref.href)&&dataHref.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(dataHref.node,dataHref.href))return;e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:dataHref.href},"*")}},true)})();</script><script>(function(){var FOCUS_TYPE="ecto:artifact-focus-request";var CLOSE_TYPE="ecto:artifact-close-request";function focusArtifactDocument(){var body=document.body;if(!body)return;try{window.focus();}catch(e){}if(!body.hasAttribute("tabindex"))body.setAttribute("tabindex","-1");try{body.focus({preventScroll:true});}catch(e){try{body.focus();}catch(e2){}}}window.addEventListener("message",function(event){if(event.source!==window.parent)return;var data=event.data;if(!data||typeof data!=="object"||data.type!==FOCUS_TYPE)return;if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",focusArtifactDocument,{once:true});return;}focusArtifactDocument();});window.addEventListener("keydown",function(event){if(event.key!=="Escape")return;window.setTimeout(function(){if(event.defaultPrevented)return;window.parent.postMessage({type:CLOSE_TYPE},"*");},0);});})();</script></body>
+<script>(function(){var loc=location.href.replace(/#.*$/,"");var ATTR_NAMES=["data-product-id","data-productid","data-product_id","product-id","productid","product_id","data-source-entity-id","source-entity-id","source_entity_id","data-product","data-metadata","data-meta"];var DATASET_KEYS=["productId","productid","product_id","sourceEntityId","sourceentityid","source_entity_id","product","metadata","meta"];function readProductId(value){if(typeof value!=="string"||value.length===0)return null;if(/^[0-9]{6,}$/.test(value))return value;var match=value.match(/(?:product(?:_|-)?id|source(?:_|-)?entity(?:_|-)?id)["'=:\s]+([0-9]{6,})/i);return match?match[1]:null}function extractProductId(start){for(var node=start;node&&node!==document.body;node=node.parentElement){for(var i=0;i<ATTR_NAMES.length;i++){var attrValue=node.getAttribute&&node.getAttribute(ATTR_NAMES[i]);var attrProductId=readProductId(attrValue);if(attrProductId)return attrProductId}var dataset=node.dataset||null;if(dataset){for(var j=0;j<DATASET_KEYS.length;j++){var dataValue=dataset[DATASET_KEYS[j]];var dataProductId=readProductId(dataValue);if(dataProductId)return dataProductId}}}return null}function isInlineMediaSlotElement(node){return !!(node&&node.getAttribute&&node.getAttribute("data-clippy-inline-media-slot")!==null)}function findInlineMediaSlot(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(isInlineMediaSlotElement(node))return node}return null}function readInlineMediaUrl(node){if(!node)return null;return node.getAttribute&&((node.getAttribute("data-clippy-inline-media-url")||node.getAttribute("data-url")||node.getAttribute("data_url")))||node.href||null}function stripHash(url){return String(url).replace(/#.*$/,"")}function urlsMatch(a,b){if(!a||!b)return false;try{return stripHash(new URL(a,loc).href)===stripHash(new URL(b,loc).href)}catch(_){return stripHash(a)===stripHash(b)}}function isFirstPartyReelUrl(value){try{var url=new URL(value,loc);if(url.protocol!=="https:")return false;var host=url.hostname.toLowerCase();var supported=host==="instagram.com"||host.endsWith(".instagram.com")||host==="facebook.com"||host.endsWith(".facebook.com");return supported&&/\/reels?\//i.test(url.pathname)}catch(_){return false}}function isInlineMediaUrlClick(node,href){var slot=findInlineMediaSlot(node);if(!slot)return false;var slotUrl=readInlineMediaUrl(slot);if(slotUrl)return urlsMatch(href,slotUrl);return isFirstPartyReelUrl(href)}function findDataHref(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(node.getAttribute){var href=node.getAttribute("data-href")||node.getAttribute("data-url");if(href)return{href:href,node:node}}}return null}var nativeOpen=window.open;window.open=function(url){if(parent!==window&&typeof url==="string"&&/^https?:\/\//.test(url)){parent.postMessage({type:"ecto:usercontent-link-click",href:url},"*");return null}return nativeOpen?nativeOpen.apply(window,arguments):null};document.addEventListener("click",function(e){var target=e.target instanceof Element?e.target:null;if(!target)return;if(parent===window)return;var a=target.closest?target.closest("a[href]"):null;if(a&&a.href&&/^https?:\/\//.test(a.href)&&a.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(a,a.href))return;var productId=extractProductId(target)||extractProductId(a);if(productId){e.preventDefault();parent.postMessage({type:"ecto-artifact-link-click",productId:productId},"*");return}e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:a.href},"*");return}var dataHref=findDataHref(target);if(dataHref&&/^https?:\/\//.test(dataHref.href)&&dataHref.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(dataHref.node,dataHref.href))return;e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:dataHref.href},"*")}},true)})();</script><script>(function(){var FOCUS_TYPE="ecto:artifact-focus-request";var CLOSE_TYPE="ecto:artifact-close-request";function focusArtifactDocument(){var body=document.body;if(!body)return;try{window.focus();}catch(e){}if(!body.hasAttribute("tabindex"))body.setAttribute("tabindex","-1");try{body.focus({preventScroll:true});}catch(e){try{body.focus();}catch(e2){}}}window.addEventListener("message",function(event){if(event.source!==window.parent)return;var data=event.data;if(!data||typeof data!=="object"||data.type!==FOCUS_TYPE)return;if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",focusArtifactDocument,{once:true});return;}focusArtifactDocument();});window.addEventListener("keydown",function(event){if(event.key!=="Escape")return;window.setTimeout(function(){if(event.defaultPrevented)return;window.parent.postMessage({type:CLOSE_TYPE},"*");},0);});})();</script><script>(function(){var loc=location.href.replace(/#.*$/,"");var ATTR_NAMES=["data-product-id","data-productid","data-product_id","product-id","productid","product_id","data-source-entity-id","source-entity-id","source_entity_id","data-product","data-metadata","data-meta"];var DATASET_KEYS=["productId","productid","product_id","sourceEntityId","sourceentityid","source_entity_id","product","metadata","meta"];function readProductId(value){if(typeof value!=="string"||value.length===0)return null;if(/^[0-9]{6,}$/.test(value))return value;var match=value.match(/(?:product(?:_|-)?id|source(?:_|-)?entity(?:_|-)?id)["'=:\s]+([0-9]{6,})/i);return match?match[1]:null}function extractProductId(start){for(var node=start;node&&node!==document.body;node=node.parentElement){for(var i=0;i<ATTR_NAMES.length;i++){var attrValue=node.getAttribute&&node.getAttribute(ATTR_NAMES[i]);var attrProductId=readProductId(attrValue);if(attrProductId)return attrProductId}var dataset=node.dataset||null;if(dataset){for(var j=0;j<DATASET_KEYS.length;j++){var dataValue=dataset[DATASET_KEYS[j]];var dataProductId=readProductId(dataValue);if(dataProductId)return dataProductId}}}return null}function isInlineMediaSlotElement(node){return !!(node&&node.getAttribute&&node.getAttribute("data-clippy-inline-media-slot")!==null)}function findInlineMediaSlot(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(isInlineMediaSlotElement(node))return node}return null}function readInlineMediaUrl(node){if(!node)return null;return node.getAttribute&&((node.getAttribute("data-clippy-inline-media-url")||node.getAttribute("data-url")||node.getAttribute("data_url")))||node.href||null}function stripHash(url){return String(url).replace(/#.*$/,"")}function urlsMatch(a,b){if(!a||!b)return false;try{return stripHash(new URL(a,loc).href)===stripHash(new URL(b,loc).href)}catch(_){return stripHash(a)===stripHash(b)}}function isFirstPartyReelUrl(value){try{var url=new URL(value,loc);if(url.protocol!=="https:")return false;var host=url.hostname.toLowerCase();var supported=host==="instagram.com"||host.endsWith(".instagram.com")||host==="facebook.com"||host.endsWith(".facebook.com");return supported&&/\/reels?\//i.test(url.pathname)}catch(_){return false}}function isInlineMediaUrlClick(node,href){var slot=findInlineMediaSlot(node);if(!slot)return false;var slotUrl=readInlineMediaUrl(slot);if(slotUrl)return urlsMatch(href,slotUrl);return isFirstPartyReelUrl(href)}function findDataHref(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(node.getAttribute){var href=node.getAttribute("data-href")||node.getAttribute("data-url");if(href)return{href:href,node:node}}}return null}var nativeOpen=window.open;window.open=function(url){if(parent!==window&&typeof url==="string"&&/^https?:\/\//.test(url)){parent.postMessage({type:"ecto:usercontent-link-click",href:url},"*");return null}return nativeOpen?nativeOpen.apply(window,arguments):null};document.addEventListener("click",function(e){var target=e.target instanceof Element?e.target:null;if(!target)return;if(parent===window)return;var a=target.closest?target.closest("a[href]"):null;if(a&&a.href&&/^https?:\/\//.test(a.href)&&a.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(a,a.href))return;var productId=extractProductId(target)||extractProductId(a);if(productId){e.preventDefault();parent.postMessage({type:"ecto-artifact-link-click",productId:productId},"*");return}e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:a.href},"*");return}var dataHref=findDataHref(target);if(dataHref&&/^https?:\/\//.test(dataHref.href)&&dataHref.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(dataHref.node,dataHref.href))return;e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:dataHref.href},"*")}},true)})();</script><script>(function(){var FOCUS_TYPE="ecto:artifact-focus-request";var CLOSE_TYPE="ecto:artifact-close-request";function focusArtifactDocument(){var body=document.body;if(!body)return;try{window.focus();}catch(e){}if(!body.hasAttribute("tabindex"))body.setAttribute("tabindex","-1");try{body.focus({preventScroll:true});}catch(e){try{body.focus();}catch(e2){}}}window.addEventListener("message",function(event){if(event.source!==window.parent)return;var data=event.data;if(!data||typeof data!=="object"||data.type!==FOCUS_TYPE)return;if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",focusArtifactDocument,{once:true});return;}focusArtifactDocument();});window.addEventListener("keydown",function(event){if(event.key!=="Escape")return;window.setTimeout(function(){if(event.defaultPrevented)return;window.parent.postMessage({type:CLOSE_TYPE},"*");},0);});})();</script></body>
 </html>
