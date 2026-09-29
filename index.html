@@ -229,12 +229,14 @@ function enrichBarsWithChip(bars){
   let ind=chipModelCompute(bars);
   return bars.map((b,i)=>({ ...b, avg: b.avg!=null ? b.avg : (b.amount && b.vol ? b.amount/(b.vol*100) : b.close), cost50:ind.cost50[i], cost75:ind.cost75[i], cost90:ind.cost90[i], zq1:ind.zq1[i], zq:ind.zq[i], vwma10:ind.vwma10[i] }));
 }
-async function fetchEastMoney2Days(secid){
-  const urls=[
-    `https://push2.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=10&end=20500101&iscca=1&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`,
-    `https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=10&end=20500101&iscca=1&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`
-  ];
-  for(let url of urls){
+async function fetchEastMoney2Days(secid, limitDays=2){
+  const limits = [10, 60];
+  const urlsList = [];
+  for(let l of limits){
+    urlsList.push(`https://push2.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=${l}&end=20500101&iscca=1&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`);
+    urlsList.push(`https://push2his.eastmoney.com/api/qt/stock/kline/get?secid=${secid}&klt=101&fqt=1&lmt=${l}&end=20500101&iscca=1&fields1=f1,f2,f3,f4,f5,f6&fields2=f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61`);
+  }
+  for(let url of urlsList){
     try{
       const res=await fetch(url,{cache:'no-store'});
       if(!res.ok) continue;
@@ -242,9 +244,9 @@ async function fetchEastMoney2Days(secid){
       const klines=js?.data?.klines;
       if(!klines||!klines.length) continue;
       let out=[];
-      for(let line of klines.slice(-FRONTEND_TEMP_DAYS)){
+      for(let line of klines.slice(-limitDays)){
         let a=line.split(',');
-        if(a.length<6) continue;
+        if(a.length<5) continue;
         let date=a[0]; let open=parseFloat(a[1]), close=parseFloat(a[2]), high=parseFloat(a[3]), low=parseFloat(a[4]);
         let vol=parseFloat(a[5])||0; let amount=parseFloat(a[6])||0; let turnover=parseFloat(a[10])||0;
         if(!amount && vol && close) amount=vol*100*close;
@@ -257,6 +259,11 @@ async function fetchEastMoney2Days(secid){
   }
   return null;
 }
+async function fetchEastMoneyFull(secid, limit=60){
+  // 指数后台无数据时，用东财补60根
+  return await fetchEastMoney2Days(secid, limit);
+}
+
 function mergeBackendWithFrontend(backendBars, frontBars){
   if(!frontBars||!frontBars.length) return backendBars.slice(-150);
   let byDate={}; for(let b of backendBars) if(b&&b.date) byDate[b.date]=b;
@@ -373,22 +380,35 @@ async function getFullHistory(secid, limit=150){
 }
 const histCache={};
 async function getHistBars(secid, limit, forceEast=false){
-  let backendBars;
+  const want = limit||60;
+  let backendBars=[];
   if(!forceEast && histCache[secid]) backendBars=JSON.parse(JSON.stringify(histCache[secid]));
   else {
     try{ backendBars=await getFullHistory(secid,150); histCache[secid]=backendBars; }catch(e){ backendBars=[]; }
   }
-  let backendSlice=backendBars.slice(-Math.min(limit||60,150));
+  // 指数后台可能无数据（如000688），直接用东财60根
+  if(!backendBars.length){
+    try{
+      let full=await fetchEastMoneyFull(secid, want);
+      if(full && full.length){
+        let enriched=enrichBarsWithChip(full);
+        histCache[secid]=enriched;
+        return JSON.parse(JSON.stringify(enriched.slice(-want)));
+      }
+    }catch(e){}
+    return [];
+  }
+  let backendSlice=backendBars.slice(-Math.min(want,150));
   if(BACKEND_ONLY_TEST) return JSON.parse(JSON.stringify(backendSlice));
-  // 点击自选/指数时强制向东财要2天
   let front=null;
-  try{ front=await fetchEastMoney2Days(secid); }catch(e){}
+  try{ front=await fetchEastMoney2Days(secid, 2); }catch(e){}
   if(front && front.length){
     let merged=mergeBackendWithFrontend(backendBars, front);
-    return JSON.parse(JSON.stringify(merged.slice(-Math.min(limit||60,150))));
+    return JSON.parse(JSON.stringify(merged.slice(-want)));
   }
   return JSON.parse(JSON.stringify(backendSlice));
 }
+
 async function getLiveQuoteFull(secid){
   if(typeof BACKEND_ONLY_TEST!=='undefined' && BACKEND_ONLY_TEST) return null;
   try{
@@ -606,7 +626,7 @@ async function fillRowQuote(item, row, isUpdating=false){
   if(isUpdating) row.classList.add('updating');
   else { row.classList.add('updating'); setTimeout(()=>row.classList.remove('updating'), 800); }
   try{
-    const bars=await getHistBars(item.code,20, true); // 缩略图20根，强制东财2天融合
+    const bars=await getHistBars(item.code,20, true); // 缩略图20根铁律
     if(!bars.length) throw new Error('no bars');
     const live=await getLiveQuoteFull(item.code);
     let last=bars[bars.length-1];
@@ -722,7 +742,7 @@ async function loadDetail(){
   metaEl.textContent='加载中...';
   const isIndex=TEST_INDEXES.some(x=>x.code===item.code);
   try{
-    const bars=await getHistBars(item.code, 150, true); // 点击详情强制东财2天融合
+    const bars=await getHistBars(item.code, 150, true); // 详情150根融合
     const liveFull=await getLiveQuoteFull(item.code);
     const trends=await getIntraday(item.code);
     let merged=bars.slice();
