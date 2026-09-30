@@ -200,18 +200,31 @@ def fetch_bars(code, days):
         except: continue
     return bars
 
-def fetch_bars_with_timeout(code, days, timeout=20):
-    # 卡顿就过：用线程池超时跳过
-    try:
-        with ThreadPoolExecutor(max_workers=1) as ex:
-            fut = ex.submit(fetch_bars, code, days)
-            return fut.result(timeout=timeout)
-    except FutureTimeoutError:
-        print(f"{code} fetch timeout {timeout}s skip")
-        return []
-    except Exception as e:
-        print(f"{code} fetch err {e} skip")
-        return []
+def fetch_bars_with_timeout(code, days, timeout=25):
+    # 卡顿就过：用线程池超时跳过，重试2次，解决600127这种偶发空
+    for attempt in range(3):
+        try:
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(fetch_bars, code, days)
+                bars = fut.result(timeout=timeout)
+                if bars:
+                    return bars
+                # 空也重试一次，可能baostock偶发空
+                if attempt < 2:
+                    print(f"{code} fetch empty attempt {attempt+1} retry {days}天")
+                    continue
+                return []
+        except FutureTimeoutError:
+            print(f"{code} fetch timeout {timeout}s attempt {attempt+1} skip")
+            if attempt == 2:
+                return []
+            continue
+        except Exception as e:
+            print(f"{code} fetch err {e} attempt {attempt+1} skip")
+            if attempt == 2:
+                return []
+            continue
+    return []
 
 def fetch_index_bars(bs_code_str, days):
     end = datetime.date.today().strftime("%Y-%m-%d")
@@ -479,12 +492,17 @@ def main():
         if batch_counter >= batch_commit:
             print(f"--- batch {batch_commit} reached, commit & push ---")
             CHECKPOINT_FILE.write_text(json.dumps({"done": sorted(list(checkpoint)), "updated": datetime.datetime.now().isoformat()}, ensure_ascii=False), encoding='utf-8')
+            existing_count = len(list(DATA_DIR.glob("*.json")))
             META_FILE.write_text(json.dumps({
                 "lastUpdateDate": latest_day,
                 "total": len(all_codes),
-                "updated": len(checkpoint),
+                "existing": existing_count,
+                "updated": existing_count,
+                "updatedThisRun": done_this_run,
+                "skipped": skipped_up_to_date,
+                "deepRepair": deep_repair,
                 "ranAt": datetime.datetime.now().isoformat(),
-                "note": f"手动跑分批提交 已完成{len(checkpoint)}/{len(all_codes)} 本次更新{done_this_run} 跳过最新{skipped_up_to_date} 深补{deep_repair} 失败{len(failed)}只",
+                "note": f"已存{existing_count}/{len(all_codes)} 本次更新{done_this_run} 跳过{skipped_up_to_date} 深补{deep_repair} 失败{len(failed)}只",
                 "done": len(checkpoint),
                 "resume": resume_flag,
                 "failed": failed[:100]
@@ -498,17 +516,22 @@ def main():
     # 最后收尾
     CHECKPOINT_FILE.write_text(json.dumps({"done": sorted(list(checkpoint)), "updated": datetime.datetime.now().isoformat()}, ensure_ascii=False), encoding='utf-8')
     bs.logout()
+    existing_count = len(list(DATA_DIR.glob("*.json")))
     META_FILE.write_text(json.dumps({
         "lastUpdateDate": latest_day,
         "total": len(all_codes),
-        "updated": len(checkpoint),
+        "existing": existing_count,
+        "updated": existing_count,
+        "updatedThisRun": done_this_run,
+        "skipped": skipped_up_to_date,
+        "deepRepair": deep_repair,
         "ranAt": datetime.datetime.now().isoformat(),
-        "note": f"手动跑全量完成 已完成{len(checkpoint)}/{len(all_codes)} 本次更新{done_this_run} 跳过最新{skipped_up_to_date} 深补{deep_repair} 失败{len(failed)}只",
+        "note": f"已存{existing_count}/{len(all_codes)} 本次更新{done_this_run} 跳过{skipped_up_to_date} 深补{deep_repair} 失败{len(failed)}只",
         "done": len(checkpoint),
         "resume": resume_flag,
         "failed": failed[:100]
     }, ensure_ascii=False))
-    print(f"run finished this run {done_this_run} skip {skipped_up_to_date} deep_repair {deep_repair} total done {len(checkpoint)}/{len(all_codes)} failed {len(failed)}")
+    print(f"run finished this run {done_this_run} skip {skipped_up_to_date} deep_repair {deep_repair} total done {len(checkpoint)}/{len(all_codes)} failed {len(failed)} existing {existing_count}")
     # 最后再尝试一次推送
     git_commit_push(9999, len(checkpoint), batch_commit, is_final=True)
 

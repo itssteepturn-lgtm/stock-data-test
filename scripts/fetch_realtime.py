@@ -95,7 +95,18 @@ def bs_code(code):
     else:
         return "sz."+code
 
+INDEX_EM_MAP={
+    "000001": "1.000001",
+    "399001": "0.399001",
+    "399006": "0.399006",
+    "000680": "1.000680",
+    "000688": "1.000688",
+}
 def em_secid(code):
+    # 指数特殊映射，修复000001被当成平安银行0.000001的bug
+    if code in INDEX_EM_MAP:
+        return INDEX_EM_MAP[code]
+    # 东财 secid: 0.sz 1.sh
     if code.startswith('6') or code.startswith('5') or code.startswith('9') or code.startswith('688'):
         return f"1.{code}"
     else:
@@ -113,33 +124,47 @@ def load_calendar():
 
 def is_trading_day_today(cal):
     today = datetime.date.today().strftime("%Y-%m-%d")
+    # 如果日历里有今天，认为是交易日
     if today in cal:
         return True
+    # 如果日历最后一天就是今天，也算
     if cal and cal[-1] == today:
         return True
+    # 如果今天是周末，直接非交易日
     wd = datetime.date.today().weekday()
     if wd >=5:
         return False
+    # 没有日历时，按周一到周五算交易日，假期会有误判，但总比一直跑好
     return wd <5
 
 def is_trading_time_now():
     now = datetime.datetime.now()
+    # 北京时间
+    # GitHub Actions是UTC，需要+8
+    # 这里直接用本地时间，Actions里会是UTC，但我们判断9:30-15:00北京 = 1:30-7:00 UTC
+    # 简单：取UTC+8
     bj_now = now + datetime.timedelta(hours=8) if now.tzinfo is None else now.astimezone(datetime.timezone(datetime.timedelta(hours=8)))
+    # 如果是直接用北京时间机器，now就是北京
+    # 为了兼容，判断两次
     hour = bj_now.hour
     minute = bj_now.minute
     hm = hour*60+minute
+    # 9:30=570, 11:30=690, 13:00=780, 15:00=900
     if (570 <= hm <= 690) or (780 <= hm <= 900):
         return True
     return False
 
 def fetch_em_batch(secids: List[str], timeout=8):
+    """批量拉东财 ulist，返回 dict secid->quote"""
     if not secids:
         return {}
+    # 东财一次最多~100，拆批
     result = {}
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Referer": "https://www.eastmoney.com/",
     }
+    # 字段：f2现价 f3涨跌幅 f4涨跌额 f5成交量 f6成交额 f8换手率 f12代码 f13市场 f15最高 f16最低 f17开盘 f18昨收
     fields = "f1,f2,f3,f4,f12,f13,f14,f15,f16,f17,f18,f5,f6,f8"
     for i in range(0, len(secids), 80):
         batch = secids[i:i+80]
@@ -147,14 +172,17 @@ def fetch_em_batch(secids: List[str], timeout=8):
         url = f"https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&fields={fields}&secids={secids_str}"
         try:
             r = requests.get(url, headers=headers, timeout=timeout)
-            if r.status_code !=200:
+            if r.status_code !=0 and r.status_code !=200:
                 continue
             j = r.json()
             diff = j.get('data',{}).get('diff',[])
             for item in diff:
+                # item: f12=code, f13=market, f2=price...
                 code = item.get('f12')
                 if not code:
                     continue
+                # secid from market
+                # f13: 0=sz 1=sh
                 mkt = item.get('f13')
                 em_id = f"{mkt}.{code}" if mkt is not None else None
                 result[em_id or code] = {
@@ -179,10 +207,12 @@ def fetch_em_batch(secids: List[str], timeout=8):
     return result
 
 def fetch_em_trends(secid_em: str, timeout=6):
+    """拉分时 242点，返回 list of {time, price, avg, vol}"""
     headers = {
         "User-Agent": "Mozilla/5.0",
         "Referer": "https://www.eastmoney.com/",
     }
+    # trends2
     url = f"https://push2his.eastmoney.com/api/qt/stock/trends2/get?fields1=f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13&fields2=f51,f52,f53,f54,f55,f56,f57,f58&secid={secid_em}&iscr=0&iscca=0"
     try:
         r = requests.get(url, headers=headers, timeout=timeout)
@@ -191,13 +221,15 @@ def fetch_em_trends(secid_em: str, timeout=6):
         trends = data.get('trends',[])
         out=[]
         for line in trends:
+            # "2026-09-30 09:30:00,12.34,12.35,1000,500000,0"
             parts = line.split(',')
             if len(parts) <5:
                 continue
-            t = parts[0][11:16]
+            t = parts[0][11:16]  # 09:30
             price = float(parts[1]) if parts[1] else 0
             avg = float(parts[2]) if parts[2] else price
             vol = int(parts[3]) if parts[3] else 0
+            # parts[4] amount?
             out.append({"time": t, "price": price, "avg": avg, "vol": vol})
         return out
     except Exception as e:
@@ -227,6 +259,7 @@ def build_model_from_bars(bars: List[Dict]):
     return model
 
 def get_chip_model(code: str):
+    """获取昨收的筹码模型，优先读缓存，否则重建"""
     chip_path = CHIP_STATE_DIR / f"{code}.json"
     if chip_path.exists():
         try:
@@ -236,6 +269,7 @@ def get_chip_model(code: str):
             return m
         except:
             pass
+    # 重建
     stock_path = DATA_DIR / f"{code}.json"
     if not stock_path.exists():
         return None
@@ -244,12 +278,14 @@ def get_chip_model(code: str):
         bars = j['bars'] if isinstance(j, dict) and 'bars' in j else j
         if not bars:
             return None
+        # 去掉今天如果已在历史里（半夜更新后）
         today_str = datetime.date.today().strftime("%Y-%m-%d")
         bars = [b for b in bars if b.get('date') != today_str]
         bars = bars[-150:]
         model = build_model_from_bars(bars)
         if model:
             CHIP_STATE_DIR.mkdir(parents=True, exist_ok=True)
+            # 保存w，下次直接用
             try:
                 chip_path.write_text(json.dumps({"min": model.min, "max": model.max, "n": model.n, "w": model.w}, ensure_ascii=False))
             except:
@@ -260,6 +296,7 @@ def get_chip_model(code: str):
         return None
 
 def load_watchlist():
+    # 优先 data/watchlist.json
     if WATCHLIST_FILE.exists():
         try:
             j = json.loads(WATCHLIST_FILE.read_text())
@@ -267,6 +304,7 @@ def load_watchlist():
                 return [x if isinstance(x,str) else x.get('code') or x.get('short') for x in j][:25]
         except:
             pass
+    # 其次 stock_list.json 前25
     if STOCK_LIST_FILE.exists():
         try:
             j = json.loads(STOCK_LIST_FILE.read_text())
@@ -274,11 +312,12 @@ def load_watchlist():
             return codes
         except:
             pass
+    # 默认
     return ["600000","600036","000001","300750","000063"][:15]
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--mode', choices=['fast','full'], default='fast')
+    parser.add_argument('--mode', choices=['fast','full'], default='fast', help='fast=29只自选+指数，full=全市场5618')
     args = parser.parse_args()
 
     cal = load_calendar()
@@ -290,6 +329,7 @@ def main():
     print(f"realtime mode={args.mode} today={today_str} is_trading_day={is_td} is_trading_time={is_tt} cal_len={len(cal)}")
 
     if not is_td:
+        # 非交易日，写空文件，前端显示休市
         out = {
             "date": today_str,
             "updated": now_bj.strftime("%Y-%m-%d %H:%M:%S"),
@@ -305,14 +345,21 @@ def main():
         print("非交易日，写休市空文件")
         return
 
+    # 1. 拉自选+指数
     watch_codes = load_watchlist()
+    # 指数：上证 深成 创业 科创综指
     index_codes = ["000001","399001","399006","000680"]
+    # 去重
     all_fast_codes = list(dict.fromkeys(watch_codes + index_codes))
+
+    # 转成东财secid
     fast_secids = [em_secid(c) for c in all_fast_codes]
 
     print(f"fast fetch {len(fast_secids)} codes: {all_fast_codes[:10]}")
+
     fast_quotes = fetch_em_batch(fast_secids)
 
+    # 2. 计算实时cost/zq
     today_realtime = {}
     indices_realtime = {}
 
@@ -321,6 +368,7 @@ def main():
         q = fast_quotes.get(em_id)
         if not q:
             continue
+        # 基本字段
         try:
             low = float(q['low']) if q['low'] is not None else None
             high = float(q['high']) if q['high'] is not None else None
@@ -333,9 +381,11 @@ def main():
             if low is None or high is None or close is None:
                 continue
             avg = amount/(vol*100) if vol>0 and amount else close
+            # 筹码模型
             model = get_chip_model(code)
             cost50_r = cost75_r = cost90_r = zq_r = zq1_r = None
             if model:
+                # copy
                 import copy
                 m2 = copy.deepcopy(model)
                 m2.add_day(low, high, avg, turnover)
@@ -343,9 +393,12 @@ def main():
                 cost75_r = m2.percentile(75)
                 cost90_r = m2.percentile(90)
                 zq_r = m2.winner_below(avg)
+                # vwma10 用 close 近似
                 zq1_r = m2.winner_below(close)
+            # 分时
             trends = []
             if code in watch_codes or code in index_codes:
+                # 只给自选+指数拉分时，省请求
                 trends = fetch_em_trends(em_id)
                 time.sleep(0.15)
 
@@ -379,6 +432,7 @@ def main():
             print(f"calc {code} fail {e}")
             continue
 
+    # 写 today.json
     out_today = {
         "date": today_str,
         "updated": now_bj.strftime("%Y-%m-%d %H:%M:%S"),
@@ -388,11 +442,15 @@ def main():
         "indices": indices_realtime
     }
     (REALTIME_DIR / "today.json").write_text(json.dumps(out_today, ensure_ascii=False))
+
     print(f"today.json written {len(today_realtime)} stocks {len(indices_realtime)} indices")
 
     if args.mode == 'fast':
+        # fast模式不写全市场，保留上一次的full.json
         return
 
+    # 3. full模式：全市场5618只，只算报价和实时cost/zq，不拉分时
+    # 加载全市场代码
     all_codes = []
     if STOCK_LIST_FILE.exists():
         try:
@@ -401,9 +459,11 @@ def main():
         except:
             pass
     if not all_codes:
+        # 从data/stocks目录
         all_codes = [p.stem for p in DATA_DIR.glob("*.json")][:5618]
 
     print(f"full mode all_codes {len(all_codes)}")
+    # 批量拉
     all_secids = [em_secid(c) for c in all_codes]
     all_quotes = {}
     for i in range(0, len(all_secids), 80):
@@ -424,6 +484,8 @@ def main():
             low = float(q['low']) if q['low'] is not None else None
             high = float(q['high']) if q['high'] is not None else None
             close = float(q['close']) if q['close'] is not None else None
+            open_p = float(q['open']) if q['open'] is not None else close
+            prev_close = float(q['prev_close']) if q['prev_close'] is not None else close
             vol = int(q['vol']) if q['vol'] else 0
             amount = float(q['amount']) if q['amount'] else 0
             turnover = float(q['turnover']) if q['turnover'] is not None else 0
@@ -441,7 +503,9 @@ def main():
                 cost90_r = m2.percentile(90)
                 zq_r = m2.winner_below(avg)
                 zq1_r = m2.winner_below(close)
+            # 基础因子
             cost_narrow = ((cost90_r - cost50_r)/cost50_r) if cost50_r and cost90_r and cost50_r!=0 else None
+            # 昨天的zq从历史文件拿
             zq_prev = None
             try:
                 sp = DATA_DIR / f"{code}.json"
@@ -473,11 +537,15 @@ def main():
                 "cost_narrow": cost_narrow
             }
             full_list.append(item)
+
+            # 默认选股条件：zq突破 + 收敛，可前端再筛，这里先给100只示例
             if zq_r and zq_r>70 and cost_narrow is not None and cost_narrow<0.15:
                 picks.append(item)
-        except:
+
+        except Exception as e:
             continue
 
+    # 按zq_diff排序取前100
     picks_sorted = sorted(picks, key=lambda x: (x.get('zq_diff') or 0), reverse=True)[:100]
 
     out_full = {
