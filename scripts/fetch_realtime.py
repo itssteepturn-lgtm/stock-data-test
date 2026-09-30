@@ -156,36 +156,37 @@ def is_trading_time_now():
     return False
 
 def fetch_em_batch(secids: List[str], timeout=8):
-    """批量拉东财 ulist，带指数退避，全市场自动降速"""
+    """批量拉东财 ulist，优化版：40一批 sleep 1.0，5次重试，纯东财，增量保存"""
     if not secids:
         return {}
     result = {}
+    import random, time as _time
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
         "Referer": "https://quote.eastmoney.com/",
+        "Accept": "application/json, text/plain, */*",
     }
     fields = "f1,f2,f3,f4,f12,f13,f14,f15,f16,f17,f18,f5,f6,f8"
-    # 全市场慢，自选快
     is_full = len(secids) > 100
-    batch_size = 30 if is_full else 80
-    sleep_base = 1.2 if is_full else 0.2
+    batch_size = 40 if is_full else 80
+    sleep_base = 1.0 if is_full else 0.2
     for i in range(0, len(secids), batch_size):
         batch = secids[i:i+batch_size]
         secids_str = ",".join(batch)
         url = f"https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&fields={fields}&secids={secids_str}"
         success = False
-        for retry in range(4):
+        for retry in range(5):
             try:
                 r = requests.get(url, headers=headers, timeout=timeout)
                 if r.status_code != 200:
-                    print(f"em batch http {r.status_code} retry {retry} batch {i//batch_size+1}")
-                    time.sleep((retry+1)*1.5)
+                    print(f"em http {r.status_code} retry {retry} batch {i//batch_size+1}/{(len(secids)+batch_size-1)//batch_size}")
+                    _time.sleep((retry+1)*1.2 + random.random()*0.5)
                     continue
                 j = r.json()
                 diff = j.get('data',{}).get('diff',[])
                 if not diff:
-                    print(f"em batch diff empty retry {retry} batch {i//batch_size+1}")
-                    time.sleep((retry+1)*1.2)
+                    print(f"em empty retry {retry} batch {i//batch_size+1}")
+                    _time.sleep((retry+1)*1.0 + random.random()*0.5)
                     continue
                 for item in diff:
                     code = item.get('f12')
@@ -209,18 +210,19 @@ def fetch_em_batch(secids: List[str], timeout=8):
                         "name": item.get('f14'),
                     }
                 success = True
+                if (i//batch_size+1) % 20 == 0 or (i+batch_size) >= len(secids):
+                    print(f"batch {i//batch_size+1}/{(len(secids)+batch_size-1)//batch_size} got {len(diff)} total {len(result)}")
                 break
             except Exception as e:
-                print(f"em batch fail {e} retry {retry} batch {i//batch_size+1}")
-                time.sleep((retry+1)*1.5)
+                print(f"em fail {e} retry {retry} batch {i//batch_size+1}")
+                _time.sleep((retry+1)*1.2 + random.random()*0.5)
                 continue
         if not success:
-            print(f"full batch {i//batch_size+1}/{(len(secids)+batch_size-1)//batch_size} got 0 after retry")
-        else:
-            # 已在result里统计，打印用
-            pass
-        time.sleep(sleep_base)
+            print(f"batch {i//batch_size+1} failed after retry, skip")
+        _time.sleep(sleep_base + random.random()*0.3)
     return result
+
+
 
 
 def fetch_em_trends(secid_em: str, timeout=6):
@@ -516,7 +518,23 @@ def main():
         all_codes = [p.stem for p in DATA_DIR.glob("*.json")][:5618]
 
     print(f"full mode all_codes {len(all_codes)}")
-    # 批量拉 - 内部已分30一批+1.2s限流，避免502
+    # 增量合并：先读已有full.json，避免每次从0开始超时被cancel
+    existing_full = {}
+    existing_path = REALTIME_DIR / "full.json"
+    if existing_path.exists():
+        try:
+            ej = json.loads(existing_path.read_text())
+            if isinstance(ej.get('stocks'), list):
+                for s in ej['stocks']:
+                    if s.get('code'):
+                        existing_full[s['code']] = s
+            elif isinstance(ej.get('stocks'), dict):
+                existing_full = ej['stocks']
+            print(f"existing full.json has {len(existing_full)} stocks from {ej.get('date')} {ej.get('updated')}")
+        except Exception as e:
+            print(f"read existing full.json fail {e}")
+
+    # 全量拉，但增量合并
     all_secids = [em_secid(c) for c in all_codes]
     all_quotes = fetch_em_batch(all_secids)
     print(f"full batch all got {len(all_quotes)}/{len(all_secids)}")
