@@ -226,15 +226,32 @@ def fetch_em_trends(secid_em: str, timeout=6):
         trends = data.get('trends',[])
         out=[]
         for line in trends:
-            # "2026-09-30 09:30:00,12.34,12.35,1000,500000,0"
+            # 兼容两种格式: "2026-09-30 09:30:00,9.22,9.22,100,xxx" 或 "09:30,9.22,9.22,100"
             parts = line.split(',')
-            if len(parts) <5:
+            if len(parts) <3:
                 continue
-            t = parts[0][11:16]  # 09:30
-            price = float(parts[1]) if parts[1] else 0
-            avg = float(parts[2]) if parts[2] else price
-            vol = int(parts[3]) if parts[3] else 0
-            # parts[4] amount?
+            time_raw = parts[0]
+            # 时间取 HH:MM
+            if len(time_raw) >= 16 and ' ' in time_raw:
+                t = time_raw[11:16]
+            elif ':' in time_raw:
+                t = time_raw[:5]
+            else:
+                t = time_raw
+            try:
+                price = float(parts[1]) if len(parts)>1 and parts[1] else 0
+            except:
+                price = 0
+            try:
+                avg = float(parts[2]) if len(parts)>2 and parts[2] else price
+            except:
+                avg = price
+            # 成交量可能是 "9.22" 这种字符串，兼容 float
+            try:
+                vol_raw = parts[3] if len(parts)>3 else '0'
+                vol = int(float(vol_raw)) if vol_raw else 0
+            except:
+                vol = 0
             out.append({"time": t, "price": price, "avg": avg, "vol": vol})
         return out
     except Exception as e:
