@@ -2,14 +2,14 @@ name: realtime
 
 # 后台向东财要数据
 # fast=指数+自选 20只 每2分钟自动
-# full=全市场5618只 手动触发一次
+# full=全市场5618只 手动触发一次，增量合并
 on:
   schedule:
     - cron: '*/2 1-3,5-7 * * 1-5'
   workflow_dispatch:
     inputs:
       mode:
-        description: 'fast=自选+指数 full=全市场5618只'
+        description: 'fast=自选+指数 full=全市场5618只(增量)'
         required: true
         default: 'full'
         type: choice
@@ -18,13 +18,13 @@ on:
           - 'full'
 
 concurrency:
-  group: realtime
-  cancel-in-progress: true
+  group: realtime-${{ github.event.inputs.mode || 'fast' }}
+  cancel-in-progress: false
 
 jobs:
   realtime:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: write
     steps:
@@ -40,12 +40,11 @@ jobs:
         id: decide
         run: |
           MODE="${{ github.event.inputs.mode }}"
-          # 定时触发默认fast，手动触发用你选的full
           if [ -z "$MODE" ]; then
             MODE="fast"
           fi
           echo "mode=$MODE" >> $GITHUB_OUTPUT
-          echo "Decided mode $MODE event ${{ github.event_name }} minute $(date -u +%M)"
+          echo "Decided mode $MODE event ${{ github.event_name }}"
       - name: Run realtime
         run: |
           echo "Running mode ${{ steps.decide.outputs.mode }}"
