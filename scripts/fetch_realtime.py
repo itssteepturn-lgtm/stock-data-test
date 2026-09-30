@@ -155,54 +155,59 @@ def is_trading_time_now():
     return False
 
 def fetch_em_batch(secids: List[str], timeout=8):
-    """批量拉东财 ulist，返回 dict secid->quote"""
+    """批量拉东财 ulist，返回 dict secid->quote，带重试"""
     if not secids:
         return {}
-    # 东财一次最多~100，拆批
     result = {}
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
         "Referer": "https://www.eastmoney.com/",
     }
-    # 字段：f2现价 f3涨跌幅 f4涨跌额 f5成交量 f6成交额 f8换手率 f12代码 f13市场 f15最高 f16最低 f17开盘 f18昨收
     fields = "f1,f2,f3,f4,f12,f13,f14,f15,f16,f17,f18,f5,f6,f8"
     for i in range(0, len(secids), 80):
         batch = secids[i:i+80]
         secids_str = ",".join(batch)
         url = f"https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&fields={fields}&secids={secids_str}"
-        try:
-            r = requests.get(url, headers=headers, timeout=timeout)
-            if r.status_code !=0 and r.status_code !=200:
-                continue
-            j = r.json()
-            diff = j.get('data',{}).get('diff',[])
-            for item in diff:
-                # item: f12=code, f13=market, f2=price...
-                code = item.get('f12')
-                if not code:
+        for retry in range(3):
+            try:
+                r = requests.get(url, headers=headers, timeout=timeout)
+                if r.status_code !=0 and r.status_code !=200:
+                    print(f"em batch http {r.status_code} retry {retry}")
+                    time.sleep(0.5)
                     continue
-                # secid from market
-                # f13: 0=sz 1=sh
-                mkt = item.get('f13')
-                em_id = f"{mkt}.{code}" if mkt is not None else None
-                result[em_id or code] = {
-                    "code": code,
-                    "secid": em_id,
-                    "close": item.get('f2'),
-                    "pct": item.get('f3'),
-                    "change": item.get('f4'),
-                    "high": item.get('f15'),
-                    "low": item.get('f16'),
-                    "open": item.get('f17'),
-                    "prev_close": item.get('f18'),
-                    "vol": item.get('f5'),
-                    "amount": item.get('f6'),
-                    "turnover": item.get('f8'),
-                    "name": item.get('f14'),
-                }
-        except Exception as e:
-            print(f"em batch fail {e}")
-            continue
+                j = r.json()
+                diff = j.get('data',{}).get('diff',[])
+                if not diff:
+                    print(f"em batch diff empty retry {retry} secids {secids_str[:50]}")
+                    time.sleep(0.5)
+                    continue
+                for item in diff:
+                    code = item.get('f12')
+                    if not code:
+                        continue
+                    mkt = item.get('f13')
+                    em_id = f"{mkt}.{code}" if mkt is not None else None
+                    # 确保数值是float/int
+                    result[em_id or code] = {
+                        "code": code,
+                        "secid": em_id,
+                        "close": item.get('f2'),
+                        "pct": item.get('f3'),
+                        "change": item.get('f4'),
+                        "high": item.get('f15'),
+                        "low": item.get('f16'),
+                        "open": item.get('f17'),
+                        "prev_close": item.get('f18'),
+                        "vol": item.get('f5'),
+                        "amount": item.get('f6'),
+                        "turnover": item.get('f8'),
+                        "name": item.get('f14'),
+                    }
+                break
+            except Exception as e:
+                print(f"em batch fail {e} retry {retry}")
+                time.sleep(0.5)
+                continue
         time.sleep(0.2)
     return result
 
@@ -432,17 +437,40 @@ def main():
             print(f"calc {code} fail {e}")
             continue
 
-    # 写 today.json
-    out_today = {
-        "date": today_str,
-        "updated": now_bj.strftime("%Y-%m-%d %H:%M:%S"),
-        "isTradingDay": True,
-        "isTradingTime": is_tt,
-        "stocks": today_realtime,
-        "indices": indices_realtime
-    }
+    # 写 today.json，纯东财实数，不用腾讯估量
+    if len(today_realtime)==0 and len(indices_realtime)==0:
+        print("today.json both empty, keep previous if today")
+        prev_path = REALTIME_DIR / "today.json"
+        if prev_path.exists():
+            try:
+                prev = json.loads(prev_path.read_text())
+                if prev.get('date')==today_str and (prev.get('stocks') or prev.get('indices')):
+                    print("keep previous today.json with data")
+                    # 不覆盖，直接返回
+                    if args.mode == 'fast':
+                        return
+            except:
+                pass
+        # 否则写空，但带note
+        out_today = {
+            "date": today_str,
+            "updated": now_bj.strftime("%Y-%m-%d %H:%M:%S"),
+            "isTradingDay": True,
+            "isTradingTime": is_tt,
+            "note": "em empty",
+            "stocks": {},
+            "indices": {}
+        }
+    else:
+        out_today = {
+            "date": today_str,
+            "updated": now_bj.strftime("%Y-%m-%d %H:%M:%S"),
+            "isTradingDay": True,
+            "isTradingTime": is_tt,
+            "stocks": today_realtime,
+            "indices": indices_realtime
+        }
     (REALTIME_DIR / "today.json").write_text(json.dumps(out_today, ensure_ascii=False))
-
     print(f"today.json written {len(today_realtime)} stocks {len(indices_realtime)} indices")
 
     if args.mode == 'fast':
