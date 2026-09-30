@@ -156,31 +156,36 @@ def is_trading_time_now():
     return False
 
 def fetch_em_batch(secids: List[str], timeout=8):
-    """批量拉东财 ulist，返回 dict secid->quote，带重试"""
+    """批量拉东财 ulist，带指数退避，全市场自动降速"""
     if not secids:
         return {}
     result = {}
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-        "Referer": "https://www.eastmoney.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120.0.0.0 Safari/537.36",
+        "Referer": "https://quote.eastmoney.com/",
     }
     fields = "f1,f2,f3,f4,f12,f13,f14,f15,f16,f17,f18,f5,f6,f8"
-    for i in range(0, len(secids), 80):
-        batch = secids[i:i+80]
+    # 全市场慢，自选快
+    is_full = len(secids) > 100
+    batch_size = 30 if is_full else 80
+    sleep_base = 1.2 if is_full else 0.2
+    for i in range(0, len(secids), batch_size):
+        batch = secids[i:i+batch_size]
         secids_str = ",".join(batch)
         url = f"https://push2.eastmoney.com/api/qt/ulist.np/get?fltt=2&invt=2&fields={fields}&secids={secids_str}"
-        for retry in range(3):
+        success = False
+        for retry in range(4):
             try:
                 r = requests.get(url, headers=headers, timeout=timeout)
-                if r.status_code !=0 and r.status_code !=200:
-                    print(f"em batch http {r.status_code} retry {retry}")
-                    time.sleep(0.5)
+                if r.status_code != 200:
+                    print(f"em batch http {r.status_code} retry {retry} batch {i//batch_size+1}")
+                    time.sleep((retry+1)*1.5)
                     continue
                 j = r.json()
                 diff = j.get('data',{}).get('diff',[])
                 if not diff:
-                    print(f"em batch diff empty retry {retry} secids {secids_str[:50]}")
-                    time.sleep(0.5)
+                    print(f"em batch diff empty retry {retry} batch {i//batch_size+1}")
+                    time.sleep((retry+1)*1.2)
                     continue
                 for item in diff:
                     code = item.get('f12')
@@ -188,7 +193,6 @@ def fetch_em_batch(secids: List[str], timeout=8):
                         continue
                     mkt = item.get('f13')
                     em_id = f"{mkt}.{code}" if mkt is not None else None
-                    # 确保数值是float/int
                     result[em_id or code] = {
                         "code": code,
                         "secid": em_id,
@@ -204,13 +208,20 @@ def fetch_em_batch(secids: List[str], timeout=8):
                         "turnover": item.get('f8'),
                         "name": item.get('f14'),
                     }
+                success = True
                 break
             except Exception as e:
-                print(f"em batch fail {e} retry {retry}")
-                time.sleep(0.5)
+                print(f"em batch fail {e} retry {retry} batch {i//batch_size+1}")
+                time.sleep((retry+1)*1.5)
                 continue
-        time.sleep(0.2)
+        if not success:
+            print(f"full batch {i//batch_size+1}/{(len(secids)+batch_size-1)//batch_size} got 0 after retry")
+        else:
+            # 已在result里统计，打印用
+            pass
+        time.sleep(sleep_base)
     return result
+
 
 def fetch_em_trends(secid_em: str, timeout=6):
     """拉分时 242点，返回 list of {time, price, avg, vol}"""
@@ -505,15 +516,10 @@ def main():
         all_codes = [p.stem for p in DATA_DIR.glob("*.json")][:5618]
 
     print(f"full mode all_codes {len(all_codes)}")
-    # 批量拉
+    # 批量拉 - 内部已分30一批+1.2s限流，避免502
     all_secids = [em_secid(c) for c in all_codes]
-    all_quotes = {}
-    for i in range(0, len(all_secids), 80):
-        batch = all_secids[i:i+80]
-        q = fetch_em_batch(batch)
-        all_quotes.update(q)
-        print(f"full batch {i//80+1}/{(len(all_secids)+79)//80} got {len(q)}")
-        time.sleep(0.3)
+    all_quotes = fetch_em_batch(all_secids)
+    print(f"full batch all got {len(all_quotes)}/{len(all_secids)}")
 
     full_list = []
     picks = []
