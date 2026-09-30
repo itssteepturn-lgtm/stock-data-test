@@ -645,7 +645,17 @@ async function loadDetail(){
       const zqBase = document.getElementById('detail-zq');
       if(detailMissingInfo){ zqBase.innerHTML += ` <span style="color:#e5484d">⚠️ ${detailMissingInfo}</span>`; }
     }
-    drawIntra(document.getElementById('chart-intra'), [], last.close, item.code);
+    // 修复：分时图优先用实时trends，没有则空
+    let intraTrends = [];
+    try{
+      const codeShort = item.short || item.code.split('.')[1];
+      const rtTrends = getRealtimeTrends(codeShort);
+      if(rtTrends && rtTrends.length){
+        // 转成drawIntra需要的格式 {price, time...}
+        intraTrends = rtTrends.map(t=>({price: t.price, time: t.time, avg: t.avg, vol: t.vol}));
+      }
+    }catch(e){}
+    drawIntra(document.getElementById('chart-intra'), intraTrends, last.close, item.code);
     drawVOL(document.getElementById('chart-vol'), toShow, detailState.cursorIdx);
     drawMACD(document.getElementById('chart-macd'), macdDif, macdDea, macdHist, detailState.cursorIdx);
     if(detailMissingInfo){ metaEl.innerHTML += ` <span style="color:#e5484d">⚠️ ${detailMissingInfo}</span>`; }
@@ -906,13 +916,28 @@ async function loadRealtimeSelection(){
 function updateRealtimeBadge(j){
   const badge=document.getElementById('realtime-badge');
   if(!badge) return;
-  if(!j || !j.isTradingDay){
+  if(!j){
+    badge.textContent='实时未连接';
+    badge.style.color='var(--dim)';
+    badge.style.borderColor='var(--line)';
+    badge.textContent='休市';
+    // 尝试直接用本地时间判断是否应该显示交易中
+    if(isNowTradingTime()){
+      badge.textContent='盘中·等待数据';
+      badge.style.color='#e5484d';
+      badge.style.borderColor='#e5484d';
+      badge.style.background='rgba(229,72,77,0.12)';
+    }
+    return;
+  }
+  if(!j.isTradingDay){
     badge.textContent='休市';
     badge.style.color='var(--dim)';
     badge.style.borderColor='var(--line)';
+    badge.style.background='transparent';
     return;
   }
-  if(j.isTradingTime){
+  if(j.isTradingTime || isNowTradingTime()){
     badge.textContent=`盘中实时·${j.updated ? j.updated.split(' ')[1] : ''} LIVE`;
     badge.style.color='#e5484d';
     badge.style.borderColor='#e5484d';
@@ -920,6 +945,8 @@ function updateRealtimeBadge(j){
   }else{
     badge.textContent=`已收盘 ${j.updated||''}`;
     badge.style.color='var(--dim)';
+    badge.style.borderColor='var(--line)';
+    badge.style.background='transparent';
   }
 }
 
@@ -1181,7 +1208,14 @@ async function checkDataStatus(){
   try{
     const meta=await fetchJsonWithFallback(buildMetaUrls(),3500);
     const timeStr=meta.ranAt?new Date(meta.ranAt).toLocaleString():'--';
-    el.textContent=`${timeStr} 后台${meta.total}只 已存${meta.updated}只 ${meta.note||''}`;
+    // 修复显示：已存应该是existing，不是updatedThisRun
+    const existing = meta.existing || meta.updated || 0;
+    const total = meta.total || 0;
+    const thisRun = meta.updatedThisRun || meta.done || 0;
+    const note = meta.note || `已存${existing}/${total} 本次${thisRun}只`;
+    el.textContent=`${timeStr} ${note}`;
+    // 完整信息放title，鼠标悬停可见
+    el.title=`后台${total}只 已存${existing}只 本次更新${thisRun}只 跳过${meta.skipped||0} 深补${meta.deepRepair||0} 失败${(meta.failed||[]).length}只`;
   }catch(e){}
 }
 
