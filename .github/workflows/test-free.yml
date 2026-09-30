@@ -1,0 +1,38 @@
+name: test-free-watchlist
+
+on:
+  workflow_dispatch:
+    inputs:
+      codes:
+        description: '自选，逗号分隔，支持5618只，如 688039,300760,300313,300642'
+        required: false
+        default: '688039,300760,300313,300642'
+        type: string
+
+jobs:
+  test-free:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install requests
+      - name: Run free watchlist test
+        run: |
+          echo "codes=${{ github.event.inputs.codes }}"
+          python scripts/fetch_test_free.py --codes "${{ github.event.inputs.codes }}" --out data/realtime/today.json
+      - name: Commit today.json
+        run: |
+          git config user.name "free-test-bot"
+          git config user.email "bot@test.com"
+          git add data/realtime/today.json || true
+          git diff --cached --quiet && echo "no change" && exit 0
+          git commit -m "free test ${{ github.event.inputs.codes }} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push || (git pull --rebase && git push)
