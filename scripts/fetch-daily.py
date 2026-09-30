@@ -395,22 +395,39 @@ def main():
             last_date = existing[-1]['date'] if existing else ''
             missing_150 = [d for d in expected_150 if d not in existing_dates] if expected_150 else []
             missing_30 = [d for d in expected_30 if d not in existing_dates] if expected_30 else []
-            if len(existing) < 100 or len(missing_150) > 10:
-                print(f"{code} 发现大缺口 150天缺{len(missing_150)} 已有{len(existing)} 深补150天 last={last_date}")
-                need_days = DEEP_SEED_DAYS
-                deep_repair += 1
-            elif last_date >= latest_day and not missing_30 and not missing_150:
-                skipped_up_to_date += 1
-                if skipped_up_to_date <= 5 or skipped_up_to_date % 500 == 0:
-                    print(f"{code} up-to-date skip {last_date} missing0")
-                continue
-            elif missing_30:
-                print(f"{code} 发现缺口 {missing_30} 需补30天")
-                need_days = max(GAP_CHECK_DAYS, TOPUP_DAYS+len(missing_30)+5)
-            elif last_date < latest_day:
-                need_days = TOPUP_DAYS
+
+            # 修复：checkpoint里已有且今天已是最新的，秒跳，不再重算
+            if resume_flag and code in checkpoint:
+                if last_date >= latest_day and len(existing) >= 90 and not missing_30:
+                    skipped_up_to_date += 1
+                    if skipped_up_to_date <= 5 or skipped_up_to_date % 500 == 0:
+                        print(f"{code} checkpoint up-to-date skip {last_date}")
+                    continue
+
+            # 核心修复：已经是最新的，只查近30天缺口，不查150天
+            # 104根是150自然日对应的交易日数，150天缺33是正常的，不能算大缺口
+            if last_date >= latest_day:
+                if not missing_30 and len(existing) >= 90:
+                    skipped_up_to_date += 1
+                    if skipped_up_to_date <= 5 or skipped_up_to_date % 500 == 0:
+                        print(f"{code} up-to-date skip {last_date} missing0 len={len(existing)}")
+                    continue
+                elif missing_30:
+                    print(f"{code} 发现近30天缺口 {missing_30} 需补")
+                    need_days = max(GAP_CHECK_DAYS, TOPUP_DAYS+len(missing_30)+5)
+                else:
+                    need_days = TOPUP_DAYS
             else:
-                need_days = TOPUP_DAYS
+                # 历史旧数据才看150天大缺口
+                if len(existing) < 80 or len(missing_150) > 40:
+                    print(f"{code} 发现大缺口 150天缺{len(missing_150)} 已有{len(existing)} 深补150天 last={last_date}")
+                    need_days = DEEP_SEED_DAYS
+                    deep_repair += 1
+                elif missing_30:
+                    print(f"{code} 发现缺口 {missing_30} 需补30天")
+                    need_days = max(GAP_CHECK_DAYS, TOPUP_DAYS+len(missing_30)+5)
+                else:
+                    need_days = TOPUP_DAYS
         else:
             need_days = DEEP_SEED_DAYS
 
