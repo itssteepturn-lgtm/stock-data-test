@@ -996,6 +996,13 @@ function mergeWithRealtime(secid, bars){
   if(!todayStr) return bars;
   const last = bars[bars.length-1];
   if(last && last.date===todayStr){
+    // 同一天但收盘价不同，用实时覆盖，这就是你说的一直没变化的原因
+    const rc = parseFloat(rt.close);
+    if(isFinite(rc) && Math.abs(rc - last.close) > 0.001){
+      const nb = bars.slice();
+      nb[nb.length-1] = {...last, open: parseFloat(rt.open)||last.open, high: parseFloat(rt.high)||last.high, low: parseFloat(rt.low)||last.low, close: rc, vol: rt.vol||last.vol, amount: rt.amount||last.amount, turnover: rt.turnover||last.turnover, avg: parseFloat(rt.avg)||last.avg, cost50: rt.cost50_r!=null?parseFloat(rt.cost50_r):last.cost50, cost75: rt.cost75_r!=null?parseFloat(rt.cost75_r):last.cost75, cost90: rt.cost90_r!=null?parseFloat(rt.cost90_r):last.cost90, zq: rt.zq_r!=null?parseFloat(rt.zq_r):last.zq, zq1: rt.zq1_r!=null?parseFloat(rt.zq1_r):last.zq1, _live:true, _liveTime: rt.updated || REALTIME_TODAY?.updated || REALTIME_FULL?.updated || ''};
+      return nb.slice(-150);
+    }
     return bars;
   }
   const close = parseFloat(rt.close);
@@ -1004,22 +1011,26 @@ function mergeWithRealtime(secid, bars){
   if(code==='000001' && close < 1000) return bars;
   if(code==='399001' && close < 5000) return bars;
   if(code==='399006' && close < 1000) return bars;
-  // 创建实时bar
+  // 创建实时bar - 铁律：纯后台数据，前端不估算，open/high/low必须有值否则画不出线
+  const closeNum = parseFloat(rt.close);
+  const openNum = parseFloat(rt.open);
+  const highNum = parseFloat(rt.high);
+  const lowNum = parseFloat(rt.low);
   const liveBar={
     date: todayStr,
-    open: rt.open,
-    high: rt.high,
-    low: rt.low,
-    close: rt.close,
+    open: isFinite(openNum) ? openNum : closeNum,
+    high: isFinite(highNum) ? highNum : closeNum,
+    low: isFinite(lowNum) ? lowNum : closeNum,
+    close: closeNum,
     vol: rt.vol||0,
     amount: rt.amount||0,
     turnover: rt.turnover||0,
-    avg: rt.avg||rt.close,
-    cost50: rt.cost50_r,
-    cost75: rt.cost75_r,
-    cost90: rt.cost90_r,
-    zq: rt.zq_r,
-    zq1: rt.zq1_r,
+    avg: parseFloat(rt.avg)||closeNum,
+    cost50: rt.cost50_r!=null?parseFloat(rt.cost50_r):null,
+    cost75: rt.cost75_r!=null?parseFloat(rt.cost75_r):null,
+    cost90: rt.cost90_r!=null?parseFloat(rt.cost90_r):null,
+    zq: rt.zq_r!=null?parseFloat(rt.zq_r):null,
+    zq1: rt.zq1_r!=null?parseFloat(rt.zq1_r):null,
     vwma10: null,
     _live: true,
     _liveTime: rt.updated || REALTIME_TODAY?.updated || REALTIME_FULL?.updated || ''
