@@ -485,19 +485,34 @@ async function fillRowQuote(item, row, isUpdating=false){
   if(isUpdating) row.classList.add('updating');
   else { row.classList.add('updating'); setTimeout(()=>row.classList.remove('updating'), 800); }
   try{
+    const codeShort = (item.short||'').slice(-6) || item.code.split('.')[1];
+    let rt = null;
+    if(REALTIME_TODAY){
+      if(REALTIME_TODAY.indices && REALTIME_TODAY.indices[codeShort]) rt = REALTIME_TODAY.indices[codeShort];
+      else if(REALTIME_TODAY.stocks && REALTIME_TODAY.stocks[codeShort]) rt = REALTIME_TODAY.stocks[codeShort];
+    }
     const bars=await getHistBars(item.code,20);
     if(!bars.length) throw new Error('no bars');
     let merged=bars.slice(-20);
-    // 确保数值是数字，避免指数数值和涨跌幅不对
     merged = merged.map(b=>({...b, open:parseFloat(b.open), high:parseFloat(b.high), low:parseFloat(b.low), close:parseFloat(b.close)}));
     let last=merged[merged.length-1];
     let prev=merged.length>=2?merged[merged.length-2]:null;
-    let pct=0;
-    if(prev && prev.close && last.close){
-      pct=(last.close-prev.close)/prev.close*100;
+    // 纯东财实数：优先用实时文件的 close 和 pct，避免历史收盘和东财prev_close不一致导致差10
+    let displayPrice = parseFloat(last.close);
+    let pct = 0;
+    if(rt){
+      if(rt.close!=null) displayPrice = parseFloat(rt.close);
+      if(rt.pct!=null){
+        pct = parseFloat(rt.pct);
+      } else if(prev && prev.close && displayPrice){
+        pct=(displayPrice-prev.close)/prev.close*100;
+      }
+    } else {
+      if(prev && prev.close && last.close){
+        pct=(last.close-prev.close)/prev.close*100;
+      }
     }
     const priceEl=row.querySelector('.p'); const pctEl=row.querySelector('.pct');
-    const displayPrice=parseFloat(last.close);
     if(priceEl) priceEl.textContent=isFinite(displayPrice)?displayPrice.toFixed(2):'--';
     if(pctEl){ 
       const pctStr=isFinite(pct)?(pct>=0?'+':'')+pct.toFixed(2)+'%':'--';
@@ -507,6 +522,11 @@ async function fillRowQuote(item, row, isUpdating=false){
     }
     const canvas=row.querySelector('canvas'); if(canvas){ drawMiniK(canvas, merged); }
     row._pct=pct; row._bars=merged;
+    // 如果后台没有此股实时，自选股会显示昨日K，提示一下
+    if(!rt && !isUpdating){
+      const pctEl2=row.querySelector('.pct');
+      if(pctEl2 && !pctEl2.textContent.includes('后台')) pctEl2.title='后台无此股实时，等待下次full或加入watchlist.json';
+    }
   }catch(e){ const priceEl=row.querySelector('.p'); if(priceEl) priceEl.textContent='无数据'; const pctEl=row.querySelector('.pct'); if(pctEl) pctEl.textContent=e.message.slice(0,12); row._pct=-999; }
   finally{ setTimeout(()=>row.classList.remove('updating'), 600); }
 }
