@@ -347,8 +347,8 @@ def main():
 
     # 1. 拉自选+指数
     watch_codes = load_watchlist()
-    # 指数：上证 深成 创业 科创综指
-    index_codes = ["000001","399001","399006","000680"]
+    # 指数：上证 深成 创业（科创已从首页去掉）
+    index_codes = ["000001","399001","399006"]
     # 去重
     all_fast_codes = list(dict.fromkeys(watch_codes + index_codes))
 
@@ -358,6 +358,8 @@ def main():
     print(f"fast fetch {len(fast_secids)} codes: {all_fast_codes[:10]}")
 
     fast_quotes = fetch_em_batch(fast_secids)
+    print(f"em batch got {len(fast_quotes)} (纯东财，不用腾讯估量)")
+    print(f"final fast_quotes {len(fast_quotes)}")
 
     # 2. 计算实时cost/zq
     today_realtime = {}
@@ -385,7 +387,6 @@ def main():
             model = get_chip_model(code)
             cost50_r = cost75_r = cost90_r = zq_r = zq1_r = None
             if model:
-                # copy
                 import copy
                 m2 = copy.deepcopy(model)
                 m2.add_day(low, high, avg, turnover)
@@ -393,7 +394,6 @@ def main():
                 cost75_r = m2.percentile(75)
                 cost90_r = m2.percentile(90)
                 zq_r = m2.winner_below(avg)
-                # vwma10 用 close 近似
                 zq1_r = m2.winner_below(close)
             # 分时
             trends = []
