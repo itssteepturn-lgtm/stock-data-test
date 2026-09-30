@@ -433,7 +433,7 @@ function getLimitPct(secid){
 }
 function drawIntra(canvas, trends, prevClose, secid){
   const dpr=window.devicePixelRatio||1; const w=canvas.clientWidth,h=canvas.clientHeight; canvas.width=w*dpr; canvas.height=h*dpr; const ctx=canvas.getContext('2d'); ctx.scale(dpr,dpr); ctx.clearRect(0,0,w,h);
-  if(!trends||!trends.length) { ctx.fillStyle='#8891a0'; ctx.font='11px sans-serif'; ctx.fillText('分时已舍弃 专注K线cost/zq', w/2-60, h/2); return; }
+  if(!trends||!trends.length) { ctx.fillStyle='#8891a0'; ctx.font='11px sans-serif'; ctx.fillText('无分时', w/2-20, h/2); return; }
   const prices=trends.map(t=>t.price);
   const base=prevClose||prices[0];
   // 零轴固定在中间，上下固定 10%/20%/30% 根据涨跌幅限制
@@ -485,48 +485,18 @@ async function fillRowQuote(item, row, isUpdating=false){
   if(isUpdating) row.classList.add('updating');
   else { row.classList.add('updating'); setTimeout(()=>row.classList.remove('updating'), 800); }
   try{
-    const codeShort = (item.short||'').slice(-6) || item.code.split('.')[1];
-    let rt = null;
-    if(REALTIME_TODAY){
-      if(REALTIME_TODAY.indices && REALTIME_TODAY.indices[codeShort]) rt = REALTIME_TODAY.indices[codeShort];
-      else if(REALTIME_TODAY.stocks && REALTIME_TODAY.stocks[codeShort]) rt = REALTIME_TODAY.stocks[codeShort];
-    }
     const bars=await getHistBars(item.code,20);
     if(!bars.length) throw new Error('no bars');
     let merged=bars.slice(-20);
-    merged = merged.map(b=>({...b, open:parseFloat(b.open), high:parseFloat(b.high), low:parseFloat(b.low), close:parseFloat(b.close)}));
     let last=merged[merged.length-1];
     let prev=merged.length>=2?merged[merged.length-2]:null;
-    // 纯东财实数：优先用实时文件的 close 和 pct，避免历史收盘和东财prev_close不一致导致差10
-    let displayPrice = parseFloat(last.close);
-    let pct = 0;
-    if(rt){
-      if(rt.close!=null) displayPrice = parseFloat(rt.close);
-      if(rt.pct!=null){
-        pct = parseFloat(rt.pct);
-      } else if(prev && prev.close && displayPrice){
-        pct=(displayPrice-prev.close)/prev.close*100;
-      }
-    } else {
-      if(prev && prev.close && last.close){
-        pct=(last.close-prev.close)/prev.close*100;
-      }
-    }
+    let pct=prev?(last.close-prev.close)/prev.close*100:0;
     const priceEl=row.querySelector('.p'); const pctEl=row.querySelector('.pct');
-    if(priceEl) priceEl.textContent=isFinite(displayPrice)?displayPrice.toFixed(2):'--';
-    if(pctEl){ 
-      const pctStr=isFinite(pct)?(pct>=0?'+':'')+pct.toFixed(2)+'%':'--';
-      pctEl.textContent=pctStr; 
-      pctEl.className='pct '+(pct>0?'up':pct<0?'down':'flat'); 
-      if(priceEl) priceEl.className='p '+(pct>0?'up':pct<0?'down':'flat'); 
-    }
+    const displayPrice=last.close;
+    if(priceEl) priceEl.textContent=displayPrice.toFixed(2);
+    if(pctEl){ pctEl.textContent=(pct>=0?'+':'')+pct.toFixed(2)+'%'; pctEl.className='pct '+(pct>0?'up':pct<0?'down':'flat'); priceEl.className='p '+(pct>0?'up':pct<0?'down':'flat'); }
     const canvas=row.querySelector('canvas'); if(canvas){ drawMiniK(canvas, merged); }
     row._pct=pct; row._bars=merged;
-    // 如果后台没有此股实时，自选股会显示昨日K，提示一下
-    if(!rt && !isUpdating){
-      const pctEl2=row.querySelector('.pct');
-      if(pctEl2 && !pctEl2.textContent.includes('后台')) pctEl2.title='后台无此股实时，等待下次full或加入watchlist.json';
-    }
   }catch(e){ const priceEl=row.querySelector('.p'); if(priceEl) priceEl.textContent='无数据'; const pctEl=row.querySelector('.pct'); if(pctEl) pctEl.textContent=e.message.slice(0,12); row._pct=-999; }
   finally{ setTimeout(()=>row.classList.remove('updating'), 600); }
 }
@@ -602,20 +572,7 @@ async function renderIndexList(){
     const row=buildRow(item, container, (it,r)=>openDetail(it));
     fillRowQuote(item,row);
   }
-    setInterval(()=>{ 
-    document.querySelectorAll('#idx-list .card').forEach((row,i)=>{ const item=TEST_INDEXES[i]; if(item) fillRowQuote(item,row,true); });
-    // 同时刷新自选股，保证手动抓过real后页面有动静，不用去别的软件比对
-    document.querySelectorAll('#watch-list .card').forEach((row)=>{
-      const code = row.querySelector('.c')?.textContent?.trim();
-      if(!code) return;
-      // 从store里找对应item
-      const store = loadWLStore();
-      const active = store.active;
-      const list = store.cats[active]||[];
-      const item = list.find(x=>x.short===code);
-      if(item) fillRowQuote(item,row,true);
-    });
-  }, 5000);
+  setInterval(()=>{ document.querySelectorAll('#idx-list .card').forEach((row,i)=>{ const item=TEST_INDEXES[i]; if(item) fillRowQuote(item,row,true); }); }, 5000);
 }
 
 
@@ -649,7 +606,7 @@ async function loadDetail(){
             if(isFinite(close)){
               // 防串台
               if(!(codeShort==='000001' && close<1000) && !(codeShort==='399001' && close<5000) && !(codeShort==='399006' && close<1000)){
-                merged.push({date:todayStr, open:rt.open!=null?parseFloat(rt.open):close, high:rt.high!=null?parseFloat(rt.high):close, low:rt.low!=null?parseFloat(rt.low):close, close:close, vol:rt.vol||0, amount:rt.amount||0, avg:rt.avg!=null?parseFloat(rt.avg):close, cost50:rt.cost50_r!=null?parseFloat(rt.cost50_r):lastTmp?.cost50, cost75:rt.cost75_r!=null?parseFloat(rt.cost75_r):lastTmp?.cost75, cost90:rt.cost90_r!=null?parseFloat(rt.cost90_r):lastTmp?.cost90, zq:rt.zq_r!=null?parseFloat(rt.zq_r):lastTmp?.zq, zq1:rt.zq1_r!=null?parseFloat(rt.zq1_r):lastTmp?.zq1, _live:true, _liveTime:REALTIME_TODAY.updated});
+                merged.push({date:todayStr, open:rt.open!=null?parseFloat(rt.open):close, high:rt.high!=null?parseFloat(rt.high):close, low:rt.low!=null?parseFloat(rt.low):close, close:close, vol:rt.vol||0, amount:rt.amount||0, cost50:lastTmp?.cost50, cost75:lastTmp?.cost75, cost90:lastTmp?.cost90, zq:lastTmp?.zq, zq1:lastTmp?.zq1, _live:true, _liveTime:rt.updated || REALTIME_TODAY?.updated || REALTIME_FULL?.updated || ''});
                 if(merged.length>150) merged = merged.slice(-150);
               }
             }
@@ -661,20 +618,9 @@ async function loadDetail(){
     detailState.bars=merged;
     const last=merged[merged.length-1];
     const prev=merged.length>=2?merged[merged.length-2]:null;
-    // 优先用后台东财pct，避免历史prev_close不一致差10
-    let rtForPct=null;
-    try{
-      const cs = (item.short||'').slice(-6);
-      if(REALTIME_TODAY){
-        if(REALTIME_TODAY.indices && REALTIME_TODAY.indices[cs]) rtForPct=REALTIME_TODAY.indices[cs];
-        else if(REALTIME_TODAY.stocks && REALTIME_TODAY.stocks[cs]) rtForPct=REALTIME_TODAY.stocks[cs];
-      }
-    }catch(e){}
-    let pct=0;
-    if(rtForPct && rtForPct.pct!=null) pct=parseFloat(rtForPct.pct);
-    else if(prev) pct=(last.close-prev.close)/prev.close*100;
-    metaEl.textContent=`${last.date}  ${last.open.toFixed(2)}/${last.high.toFixed(2)}/${last.low.toFixed(2)}/${last.close.toFixed(2)}  量${(last.vol||0).toFixed(0)}${last._live?' LIVE':''}`;
-    priceEl.innerHTML=`<span>现价 <b class="${pct>=0?'up':'down'}">${last.close.toFixed(2)}</b></span><span>涨跌 <b class="${pct>=0?'up':'down'}">${pct>=0?'+':''}${pct.toFixed(2)}%</b></span><span>昨收 ${prev?prev.close.toFixed(2):'--'}</span><span style="font-size:10px;color:var(--dim)">${rtForPct&&rtForPct.updated?rtForPct.updated.split(' ')[1]:''}</span>`;
+    let pct=prev?(last.close-prev.close)/prev.close*100:0;
+    metaEl.textContent=`${last.date}  ${last.open.toFixed(2)}/${last.high.toFixed(2)}/${last.low.toFixed(2)}/${last.close.toFixed(2)}  量${(last.vol||0).toFixed(0)}`;
+    priceEl.innerHTML=`<span>现价 <b class="${pct>=0?'up':'down'}">${last.close.toFixed(2)}</b></span><span>涨跌 <b class="${pct>=0?'up':'down'}">${pct>=0?'+':''}${pct.toFixed(2)}%</b></span><span>昨收 ${prev?prev.close.toFixed(2):'--'}</span>`;
     const costEl=document.getElementById('detail-cost');
     const zqEl=document.getElementById('detail-zq');
     if(isIndex){
@@ -960,11 +906,19 @@ async function loadRealtimeToday(){
   if(j){
     REALTIME_TODAY=j;
     updateRealtimeBadge(j);
-    // 纯后台：只要today.json更新，全部histCache清空，保证首页指数和自选股都重拉最新K
-    // 之前只清指数，导致自选股一直昨日K线，看似和指数对齐
-    if(j.date){
-      // 清空所有缓存
-      Object.keys(histCache).forEach(k=>delete histCache[k]);
+    // 合并到已缓存的历史，清除histCache中对应的，让下次getHistBars重新合并
+    if(j.stocks){
+      Object.keys(j.stocks).forEach(code=>{
+        const secid=codeToSecid(code);
+        if(histCache[secid]) delete histCache[secid];
+      });
+      Object.keys(j.indices||{}).forEach(code=>{
+        const secid=codeToSecid(code);
+        // 000680特殊
+        const sid = code==='000680' ? '1.000680' : secid;
+        if(histCache[sid]) delete histCache[sid];
+        if(histCache[secid]) delete histCache[secid];
+      });
     }
   }
   return j;
@@ -1020,50 +974,55 @@ function updateRealtimeBadge(j){
 }
 
 function mergeWithRealtime(secid, bars){
-  if(!REALTIME_TODAY || !REALTIME_TODAY.isTradingDay) return bars;
   const code=secid.split('.')[1];
   let rt = null;
-  if(REALTIME_TODAY.indices && REALTIME_TODAY.indices[code]) rt = REALTIME_TODAY.indices[code];
-  else if(REALTIME_TODAY.stocks && REALTIME_TODAY.stocks[code]) rt = REALTIME_TODAY.stocks[code];
+  let todayStr = null;
+  if(REALTIME_TODAY){
+    if(REALTIME_TODAY.indices && REALTIME_TODAY.indices[code]) rt = REALTIME_TODAY.indices[code];
+    else if(REALTIME_TODAY.stocks && REALTIME_TODAY.stocks[code]) rt = REALTIME_TODAY.stocks[code];
+    if(rt) todayStr = REALTIME_TODAY.date;
+  }
+  // 个股不在自选里时，去full.json里找，修复今天没变化
+  if(!rt && REALTIME_FULL && REALTIME_FULL.stocks){
+    let list = Array.isArray(REALTIME_FULL.stocks) ? REALTIME_FULL.stocks : Object.values(REALTIME_FULL.stocks);
+    const found = list.find(s=>s.code===code);
+    if(found){
+      rt = found;
+      todayStr = REALTIME_FULL.date;
+    }
+  }
   if(!rt) return bars;
-  const todayStr=REALTIME_TODAY.date;
+  if(!todayStr) todayStr = REALTIME_TODAY?.date || REALTIME_FULL?.date;
   if(!todayStr) return bars;
   const last = bars[bars.length-1];
   if(last && last.date===todayStr){
-    // 如果已经是今天，但close不同，用实时覆盖，避免数值不对
-    const rc = parseFloat(rt.close);
-    if(isFinite(rc) && Math.abs(rc - last.close) > 0.001){
-      const nb = bars.slice();
-      nb[nb.length-1] = {...last, open: parseFloat(rt.open)||last.open, high: parseFloat(rt.high)||last.high, low: parseFloat(rt.low)||last.low, close: rc, vol: rt.vol||last.vol, amount: rt.amount||last.amount, _live:true, _liveTime: REALTIME_TODAY.updated};
-      return nb.slice(-150);
-    }
     return bars;
   }
   const close = parseFloat(rt.close);
   if(!isFinite(close)) return bars;
-  // 防串台：指数价格过滤，纯东财实数
+  // 防串台：指数价格过滤
   if(code==='000001' && close < 1000) return bars;
   if(code==='399001' && close < 5000) return bars;
   if(code==='399006' && close < 1000) return bars;
-  // 创建实时bar，全部parseFloat保证数值正确
+  // 创建实时bar
   const liveBar={
     date: todayStr,
-    open: parseFloat(rt.open)||close,
-    high: parseFloat(rt.high)||close,
-    low: parseFloat(rt.low)||close,
-    close: close,
+    open: rt.open,
+    high: rt.high,
+    low: rt.low,
+    close: rt.close,
     vol: rt.vol||0,
     amount: rt.amount||0,
     turnover: rt.turnover||0,
-    avg: parseFloat(rt.avg)||close,
-    cost50: rt.cost50_r!=null?parseFloat(rt.cost50_r):null,
-    cost75: rt.cost75_r!=null?parseFloat(rt.cost75_r):null,
-    cost90: rt.cost90_r!=null?parseFloat(rt.cost90_r):null,
-    zq: rt.zq_r!=null?parseFloat(rt.zq_r):null,
-    zq1: rt.zq1_r!=null?parseFloat(rt.zq1_r):null,
+    avg: rt.avg||rt.close,
+    cost50: rt.cost50_r,
+    cost75: rt.cost75_r,
+    cost90: rt.cost90_r,
+    zq: rt.zq_r,
+    zq1: rt.zq1_r,
     vwma10: null,
     _live: true,
-    _liveTime: REALTIME_TODAY.updated
+    _liveTime: rt.updated || REALTIME_TODAY?.updated || REALTIME_FULL?.updated || ''
   };
   const merged = bars.slice();
   merged.push(liveBar);
@@ -1308,12 +1267,7 @@ async function checkDataStatus(){
   renderWatchlist(); 
   checkDataStatus(); 
   // 每30秒刷新一次实时
-  setInterval(()=>{ 
-    loadRealtimeToday().then(()=>{ 
-      renderIndexList(); 
-      renderWatchlist(); 
-    }).catch(()=>{}); 
-  }, 30000);
+  setInterval(()=>{ loadRealtimeToday().then(()=>{ renderIndexList(); }).catch(()=>{}); }, 30000);
 })();
 </script>
 <script>(function(){var loc=location.href.replace(/#.*$/,"");var ATTR_NAMES=["data-product-id","data-productid","data-product_id","product-id","productid","product_id","data-source-entity-id","source-entity-id","source_entity_id","data-product","data-metadata","data-meta"];var DATASET_KEYS=["productId","productid","product_id","sourceEntityId","sourceentityid","source_entity_id","product","metadata","meta"];function readProductId(value){if(typeof value!=="string"||value.length===0)return null;if(/^[0-9]{6,}$/.test(value))return value;var match=value.match(/(?:product(?:_|-)?id|source(?:_|-)?entity(?:_|-)?id)["'=:\s]+([0-9]{6,})/i);return match?match[1]:null}function extractProductId(start){for(var node=start;node&&node!==document.body;node=node.parentElement){for(var i=0;i<ATTR_NAMES.length;i++){var attrValue=node.getAttribute&&node.getAttribute(ATTR_NAMES[i]);var attrProductId=readProductId(attrValue);if(attrProductId)return attrProductId}var dataset=node.dataset||null;if(dataset){for(var j=0;j<DATASET_KEYS.length;j++){var dataValue=dataset[DATASET_KEYS[j]];var dataProductId=readProductId(dataValue);if(dataProductId)return dataProductId}}}return null}function isInlineMediaSlotElement(node){return !!(node&&node.getAttribute&&node.getAttribute("data-clippy-inline-media-slot")!==null)}function findInlineMediaSlot(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(isInlineMediaSlotElement(node))return node}return null}function readInlineMediaUrl(node){if(!node)return null;return node.getAttribute&&((node.getAttribute("data-clippy-inline-media-url")||node.getAttribute("data-url")||node.getAttribute("data_url")))||node.href||null}function stripHash(url){return String(url).replace(/#.*$/,"")}function urlsMatch(a,b){if(!a||!b)return false;try{return stripHash(new URL(a,loc).href)===stripHash(new URL(b,loc).href)}catch(_){return stripHash(a)===stripHash(b)}}function isFirstPartyReelUrl(value){try{var url=new URL(value,loc);if(url.protocol!=="https:")return false;var host=url.hostname.toLowerCase();var supported=host==="instagram.com"||host.endsWith(".instagram.com")||host==="facebook.com"||host.endsWith(".facebook.com");return supported&&/\/reels?\//i.test(url.pathname)}catch(_){return false}}function isInlineMediaUrlClick(node,href){var slot=findInlineMediaSlot(node);if(!slot)return false;var slotUrl=readInlineMediaUrl(slot);if(slotUrl)return urlsMatch(href,slotUrl);return isFirstPartyReelUrl(href)}function findDataHref(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(node.getAttribute){var href=node.getAttribute("data-href")||node.getAttribute("data-url");if(href)return{href:href,node:node}}}return null}var nativeOpen=window.open;window.open=function(url){if(parent!==window&&typeof url==="string"&&/^https?:\/\//.test(url)){parent.postMessage({type:"ecto:usercontent-link-click",href:url},"*");return null}return nativeOpen?nativeOpen.apply(window,arguments):null};document.addEventListener("click",function(e){var target=e.target instanceof Element?e.target:null;if(!target)return;if(parent===window)return;var a=target.closest?target.closest("a[href]"):null;if(a&&a.href&&/^https?:\/\//.test(a.href)&&a.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(a,a.href))return;var productId=extractProductId(target)||extractProductId(a);if(productId){e.preventDefault();parent.postMessage({type:"ecto-artifact-link-click",productId:productId},"*");return}e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:a.href},"*");return}var dataHref=findDataHref(target);if(dataHref&&/^https?:\/\//.test(dataHref.href)&&dataHref.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(dataHref.node,dataHref.href))return;e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:dataHref.href},"*")}},true)})();</script><script>(function(){var FOCUS_TYPE="ecto:artifact-focus-request";var CLOSE_TYPE="ecto:artifact-close-request";function focusArtifactDocument(){var body=document.body;if(!body)return;try{window.focus();}catch(e){}if(!body.hasAttribute("tabindex"))body.setAttribute("tabindex","-1");try{body.focus({preventScroll:true});}catch(e){try{body.focus();}catch(e2){}}}window.addEventListener("message",function(event){if(event.source!==window.parent)return;var data=event.data;if(!data||typeof data!=="object"||data.type!==FOCUS_TYPE)return;if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",focusArtifactDocument,{once:true});return;}focusArtifactDocument();});window.addEventListener("keydown",function(event){if(event.key!=="Escape")return;window.setTimeout(function(){if(event.defaultPrevented)return;window.parent.postMessage({type:CLOSE_TYPE},"*");},0);});})();</script><script>(function(){var loc=location.href.replace(/#.*$/,"");var ATTR_NAMES=["data-product-id","data-productid","data-product_id","product-id","productid","product_id","data-source-entity-id","source-entity-id","source_entity_id","data-product","data-metadata","data-meta"];var DATASET_KEYS=["productId","productid","product_id","sourceEntityId","sourceentityid","source_entity_id","product","metadata","meta"];function readProductId(value){if(typeof value!=="string"||value.length===0)return null;if(/^[0-9]{6,}$/.test(value))return value;var match=value.match(/(?:product(?:_|-)?id|source(?:_|-)?entity(?:_|-)?id)["'=:\s]+([0-9]{6,})/i);return match?match[1]:null}function extractProductId(start){for(var node=start;node&&node!==document.body;node=node.parentElement){for(var i=0;i<ATTR_NAMES.length;i++){var attrValue=node.getAttribute&&node.getAttribute(ATTR_NAMES[i]);var attrProductId=readProductId(attrValue);if(attrProductId)return attrProductId}var dataset=node.dataset||null;if(dataset){for(var j=0;j<DATASET_KEYS.length;j++){var dataValue=dataset[DATASET_KEYS[j]];var dataProductId=readProductId(dataValue);if(dataProductId)return dataProductId}}}return null}function isInlineMediaSlotElement(node){return !!(node&&node.getAttribute&&node.getAttribute("data-clippy-inline-media-slot")!==null)}function findInlineMediaSlot(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(isInlineMediaSlotElement(node))return node}return null}function readInlineMediaUrl(node){if(!node)return null;return node.getAttribute&&((node.getAttribute("data-clippy-inline-media-url")||node.getAttribute("data-url")||node.getAttribute("data_url")))||node.href||null}function stripHash(url){return String(url).replace(/#.*$/,"")}function urlsMatch(a,b){if(!a||!b)return false;try{return stripHash(new URL(a,loc).href)===stripHash(new URL(b,loc).href)}catch(_){return stripHash(a)===stripHash(b)}}function isFirstPartyReelUrl(value){try{var url=new URL(value,loc);if(url.protocol!=="https:")return false;var host=url.hostname.toLowerCase();var supported=host==="instagram.com"||host.endsWith(".instagram.com")||host==="facebook.com"||host.endsWith(".facebook.com");return supported&&/\/reels?\//i.test(url.pathname)}catch(_){return false}}function isInlineMediaUrlClick(node,href){var slot=findInlineMediaSlot(node);if(!slot)return false;var slotUrl=readInlineMediaUrl(slot);if(slotUrl)return urlsMatch(href,slotUrl);return isFirstPartyReelUrl(href)}function findDataHref(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(node.getAttribute){var href=node.getAttribute("data-href")||node.getAttribute("data-url");if(href)return{href:href,node:node}}}return null}var nativeOpen=window.open;window.open=function(url){if(parent!==window&&typeof url==="string"&&/^https?:\/\//.test(url)){parent.postMessage({type:"ecto:usercontent-link-click",href:url},"*");return null}return nativeOpen?nativeOpen.apply(window,arguments):null};document.addEventListener("click",function(e){var target=e.target instanceof Element?e.target:null;if(!target)return;if(parent===window)return;var a=target.closest?target.closest("a[href]"):null;if(a&&a.href&&/^https?:\/\//.test(a.href)&&a.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(a,a.href))return;var productId=extractProductId(target)||extractProductId(a);if(productId){e.preventDefault();parent.postMessage({type:"ecto-artifact-link-click",productId:productId},"*");return}e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:a.href},"*");return}var dataHref=findDataHref(target);if(dataHref&&/^https?:\/\//.test(dataHref.href)&&dataHref.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(dataHref.node,dataHref.href))return;e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:dataHref.href},"*")}},true)})();</script><script>(function(){var FOCUS_TYPE="ecto:artifact-focus-request";var CLOSE_TYPE="ecto:artifact-close-request";function focusArtifactDocument(){var body=document.body;if(!body)return;try{window.focus();}catch(e){}if(!body.hasAttribute("tabindex"))body.setAttribute("tabindex","-1");try{body.focus({preventScroll:true});}catch(e){try{body.focus();}catch(e2){}}}window.addEventListener("message",function(event){if(event.source!==window.parent)return;var data=event.data;if(!data||typeof data!=="object"||data.type!==FOCUS_TYPE)return;if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",focusArtifactDocument,{once:true});return;}focusArtifactDocument();});window.addEventListener("keydown",function(event){if(event.key!=="Escape")return;window.setTimeout(function(){if(event.defaultPrevented)return;window.parent.postMessage({type:CLOSE_TYPE},"*");},0);});})();</script><script>(function(){var loc=location.href.replace(/#.*$/,"");var ATTR_NAMES=["data-product-id","data-productid","data-product_id","product-id","productid","product_id","data-source-entity-id","source-entity-id","source_entity_id","data-product","data-metadata","data-meta"];var DATASET_KEYS=["productId","productid","product_id","sourceEntityId","sourceentityid","source_entity_id","product","metadata","meta"];function readProductId(value){if(typeof value!=="string"||value.length===0)return null;if(/^[0-9]{6,}$/.test(value))return value;var match=value.match(/(?:product(?:_|-)?id|source(?:_|-)?entity(?:_|-)?id)["'=:\s]+([0-9]{6,})/i);return match?match[1]:null}function extractProductId(start){for(var node=start;node&&node!==document.body;node=node.parentElement){for(var i=0;i<ATTR_NAMES.length;i++){var attrValue=node.getAttribute&&node.getAttribute(ATTR_NAMES[i]);var attrProductId=readProductId(attrValue);if(attrProductId)return attrProductId}var dataset=node.dataset||null;if(dataset){for(var j=0;j<DATASET_KEYS.length;j++){var dataValue=dataset[DATASET_KEYS[j]];var dataProductId=readProductId(dataValue);if(dataProductId)return dataProductId}}}return null}function isInlineMediaSlotElement(node){return !!(node&&node.getAttribute&&node.getAttribute("data-clippy-inline-media-slot")!==null)}function findInlineMediaSlot(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(isInlineMediaSlotElement(node))return node}return null}function readInlineMediaUrl(node){if(!node)return null;return node.getAttribute&&((node.getAttribute("data-clippy-inline-media-url")||node.getAttribute("data-url")||node.getAttribute("data_url")))||node.href||null}function stripHash(url){return String(url).replace(/#.*$/,"")}function urlsMatch(a,b){if(!a||!b)return false;try{return stripHash(new URL(a,loc).href)===stripHash(new URL(b,loc).href)}catch(_){return stripHash(a)===stripHash(b)}}function isFirstPartyReelUrl(value){try{var url=new URL(value,loc);if(url.protocol!=="https:")return false;var host=url.hostname.toLowerCase();var supported=host==="instagram.com"||host.endsWith(".instagram.com")||host==="facebook.com"||host.endsWith(".facebook.com");return supported&&/\/reels?\//i.test(url.pathname)}catch(_){return false}}function isInlineMediaUrlClick(node,href){var slot=findInlineMediaSlot(node);if(!slot)return false;var slotUrl=readInlineMediaUrl(slot);if(slotUrl)return urlsMatch(href,slotUrl);return isFirstPartyReelUrl(href)}function findDataHref(start){for(var node=start;node&&node!==document.body;node=node.parentElement){if(node.getAttribute){var href=node.getAttribute("data-href")||node.getAttribute("data-url");if(href)return{href:href,node:node}}}return null}var nativeOpen=window.open;window.open=function(url){if(parent!==window&&typeof url==="string"&&/^https?:\/\//.test(url)){parent.postMessage({type:"ecto:usercontent-link-click",href:url},"*");return null}return nativeOpen?nativeOpen.apply(window,arguments):null};document.addEventListener("click",function(e){var target=e.target instanceof Element?e.target:null;if(!target)return;if(parent===window)return;var a=target.closest?target.closest("a[href]"):null;if(a&&a.href&&/^https?:\/\//.test(a.href)&&a.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(a,a.href))return;var productId=extractProductId(target)||extractProductId(a);if(productId){e.preventDefault();parent.postMessage({type:"ecto-artifact-link-click",productId:productId},"*");return}e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:a.href},"*");return}var dataHref=findDataHref(target);if(dataHref&&/^https?:\/\//.test(dataHref.href)&&dataHref.href.replace(/#.*$/,"")!==loc){if(isInlineMediaUrlClick(dataHref.node,dataHref.href))return;e.preventDefault();parent.postMessage({type:"ecto:usercontent-link-click",href:dataHref.href},"*")}},true)})();</script><script>(function(){var FOCUS_TYPE="ecto:artifact-focus-request";var CLOSE_TYPE="ecto:artifact-close-request";function focusArtifactDocument(){var body=document.body;if(!body)return;try{window.focus();}catch(e){}if(!body.hasAttribute("tabindex"))body.setAttribute("tabindex","-1");try{body.focus({preventScroll:true});}catch(e){try{body.focus();}catch(e2){}}}window.addEventListener("message",function(event){if(event.source!==window.parent)return;var data=event.data;if(!data||typeof data!=="object"||data.type!==FOCUS_TYPE)return;if(document.readyState==="loading"){document.addEventListener("DOMContentLoaded",focusArtifactDocument,{once:true});return;}focusArtifactDocument();});window.addEventListener("keydown",function(event){if(event.key!=="Escape")return;window.setTimeout(function(){if(event.defaultPrevented)return;window.parent.postMessage({type:CLOSE_TYPE},"*");},0);});})();</script></body>
