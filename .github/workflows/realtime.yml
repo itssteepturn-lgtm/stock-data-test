@@ -1,0 +1,60 @@
+name: realtime
+
+# 后台向东财要数据
+# fast=指数+自选 20只 每2分钟自动
+# full=全市场5618只 手动触发一次
+on:
+  schedule:
+    - cron: '*/2 1-3,5-7 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 'fast=自选+指数 full=全市场5618只'
+        required: true
+        default: 'full'
+        type: choice
+        options:
+          - 'fast'
+          - 'full'
+
+concurrency:
+  group: realtime
+  cancel-in-progress: true
+
+jobs:
+  realtime:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install requests
+      - name: Decide mode
+        id: decide
+        run: |
+          MODE="${{ github.event.inputs.mode }}"
+          # 定时触发默认fast，手动触发用你选的full
+          if [ -z "$MODE" ]; then
+            MODE="fast"
+          fi
+          echo "mode=$MODE" >> $GITHUB_OUTPUT
+          echo "Decided mode $MODE event ${{ github.event_name }} minute $(date -u +%M)"
+      - name: Run realtime
+        run: |
+          echo "Running mode ${{ steps.decide.outputs.mode }}"
+          python scripts/fetch_realtime.py --mode ${{ steps.decide.outputs.mode }}
+      - name: Commit realtime
+        run: |
+          git config user.name "realtime-bot"
+          git config user.email "bot@test.com"
+          git add data/realtime/ data/chip_state/ || true
+          git diff --cached --quiet && echo "no change" && exit 0
+          git commit -m "realtime ${{ steps.decide.outputs.mode }} $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          git push || (git pull --rebase && git push) || echo "push fail, will retry next minute"
