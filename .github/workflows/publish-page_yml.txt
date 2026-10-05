@@ -1,0 +1,27 @@
+name: publish-page
+
+# 你改了 index.html（push 到 main）就自动同步到网页，不用重新抓数据
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'index.html'
+  workflow_dispatch:
+
+concurrency:
+  group: site-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  page:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: code
+      - run: bash code/scripts/site.sh page
