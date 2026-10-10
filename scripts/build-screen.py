@@ -1,17 +1,21 @@
 #!/usr/bin/env python3
 """
 把 data/stocks/*.json 里"已经算好"的 close / cost50 / cost75 / cost90 / zq / zq1
-压成前端选股、回测专用的紧凑分片 data/screen/*.json。
+压成前端选股、回测专用的紧凑二进制分片 data/screen/s*.bin（格式 fmt=2）。
 
-只做搬运 + 取整，不重新计算任何指标（cost/zq 仍然只由 fetch-daily.py 里的算法产生）。
-前端打开页面时一次载入这些分片，之后选股/回测全部在手机内存里做，秒出。
+只做搬运 + 取整 + 差分压缩，不重新计算任何指标（cost/zq 仍然只由 fetch-daily.py 里的算法产生）。
+页面首次打开时下载这些分片（约 8MB，之后浏览器缓存，同一天内再打开不再下载），
+选股/回测全部在手机内存里算，秒出。
 
 输出：
-  data/screen/meta.json   日历(最近<=150个交易日)、股票数量、名称表、分片清单、版本号
-  data/screen/s0.json ... 每片约 500 只股票；每个指标是 [股票][日期] 的整数数组，缺失用 null
-      价格类(close/cost50/75/90) x1000 取整，zq/zq1 x100 取整
+  data/screen/meta.json  版本号、交易日历(<=150天)、全部股票代码、名称表、分片清单(文件名/股票数/起始序号/字节数)
+  data/screen/s0.bin ... 每片默认 400 只股票。
+     内容：依次 6 个序列 close/cost50/cost75/cost90/zq/zq1，每个序列里按股票顺序，每只股票 D 个数；
+     每个数 = 一个 varint：0 表示该日无数据，否则 zigzag(与上一个有效值的差)+1。
+     价格类 x1000 取整，zq/zq1 x100 取整。
 """
 import json
+import os
 import pathlib
 import hashlib
 from collections import Counter
@@ -20,7 +24,7 @@ STOCK_DIR = pathlib.Path("data/stocks")
 SCREEN_DIR = pathlib.Path("data/screen")
 STOCK_LIST = pathlib.Path("data/stock_list.json")
 
-SHARD_SIZE = 500
+SHARD_SIZE = int(os.environ.get("SCREEN_SHARD_SIZE", "400"))
 KEEP_DAYS = 150
 P_SCALE = 1000
 Z_SCALE = 100
@@ -38,6 +42,22 @@ def q(v, scale):
     if f != f or f in (float("inf"), float("-inf")):
         return None
     return int(round(f * scale))
+
+
+def enc_row(row, out):
+    prev = 0
+    for v in row:
+        if v is None:
+            out.append(0)
+            continue
+        d = v - prev
+        prev = v
+        z = (d << 1) if d >= 0 else ((-d) << 1) - 1
+        x = z + 1
+        while x >= 0x80:
+            out.append((x & 0x7F) | 0x80)
+            x >>= 7
+        out.append(x)
 
 
 def load_names():
@@ -103,58 +123,63 @@ def main():
         return
     cal_set = set(cal)
 
-    codes = []
-    for code in sorted(per_stock):
-        if any(d in cal_set for d in per_stock[code]):
-            codes.append(code)
+    codes = [c for c in sorted(per_stock) if any(d in cal_set for d in per_stock[c])]
 
     SCREEN_DIR.mkdir(parents=True, exist_ok=True)
-    shard_names = []
-    shard_texts = {}
-    keys = ["close", "c50", "c75", "c90", "zq", "zq1"]
+    shard_meta = []
+    shard_bytes = {}
     for si in range(0, len(codes), SHARD_SIZE):
         chunk = codes[si:si + SHARD_SIZE]
-        out = {"codes": chunk, "close": [], "c50": [], "c75": [], "c90": [], "zq": [], "zq1": []}
+        # rows[ki][stock] = D个整数/None
+        rows = [[] for _ in range(6)]
         for code in chunk:
             rec = per_stock[code]
-            rows = [[] for _ in keys]
+            cols = [[] for _ in range(6)]
             for d in cal:
                 t = rec.get(d)
                 for ki in range(6):
-                    rows[ki].append(t[ki] if t else None)
-            for ki, k in enumerate(keys):
-                out[k].append(rows[ki])
-        name = f"s{si // SHARD_SIZE}.json"
-        shard_texts[name] = json.dumps(out, ensure_ascii=False, separators=(",", ":"))
-        shard_names.append(name)
+                    cols[ki].append(t[ki] if t else None)
+            for ki in range(6):
+                rows[ki].append(cols[ki])
+        out = bytearray()
+        for ki in range(6):
+            for r in rows[ki]:
+                enc_row(r, out)
+        name = f"s{si // SHARD_SIZE}.bin"
+        shard_bytes[name] = bytes(out)
+        shard_meta.append({"f": name, "n": len(chunk), "s": si, "len": len(out)})
 
     names_all = load_names()
     names_used = {c: names_all[c] for c in codes if c in names_all}
     h = hashlib.md5()
-    for nm in shard_names:
-        h.update(shard_texts[nm].encode("utf-8"))
+    for sm in shard_meta:
+        h.update(shard_bytes[sm["f"]])
     h.update(json.dumps(names_used, ensure_ascii=False, sort_keys=True).encode("utf-8"))
     version = cal[-1].replace("-", "") + "-" + h.hexdigest()[:10]
 
-    for nm, txt in shard_texts.items():
-        (SCREEN_DIR / nm).write_text(txt, encoding="utf-8")
-    # 清理上次遗留、这次不再使用的分片
-    for old in SCREEN_DIR.glob("s*.json"):
-        if old.name not in shard_names:
+    for nm, data in shard_bytes.items():
+        (SCREEN_DIR / nm).write_bytes(data)
+    keep = set(shard_bytes)
+    # 清理上次遗留（包括旧版 json 分片）
+    for old in list(SCREEN_DIR.glob("s*.bin")) + list(SCREEN_DIR.glob("s*.json")):
+        if old.name not in keep:
             old.unlink()
 
     meta = {
+        "fmt": 2,
         "version": version,
         "count": len(codes),
         "last": cal[-1],
         "dates": cal,
-        "shards": shard_names,
+        "codes": codes,
+        "shards": shard_meta,
         "pscale": P_SCALE,
         "zscale": Z_SCALE,
         "names": names_used,
     }
     (SCREEN_DIR / "meta.json").write_text(json.dumps(meta, ensure_ascii=False, separators=(",", ":")), encoding="utf-8")
-    print(f"[build-screen] 完成：{len(codes)} 只股票 × {len(cal)} 个交易日，最新 {cal[-1]}，{len(shard_names)} 个分片")
+    total = sum(sm["len"] for sm in shard_meta)
+    print(f"[build-screen] 完成：{len(codes)} 只股票 × {len(cal)} 个交易日，最新 {cal[-1]}，{len(shard_meta)} 个分片，共 {total/1024/1024:.1f}MB")
 
 
 if __name__ == "__main__":
