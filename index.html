@@ -51,7 +51,7 @@
   .btn{font-size:12px;padding:6px 14px;border-radius:8px;background:var(--accent);color:#fff;display:inline-block;cursor:pointer;text-align:center;}
   .btn.ghost{background:var(--panel);border:1px solid var(--line);color:var(--text);}
   .btn.danger{background:var(--up);}
-  .btn.off{opacity:.45;pointer-events:none;}
+  .btn.off{opacity:.55;}
   #sel-results .res-card{border:1px solid var(--line);border-radius:10px;padding:8px;background:var(--panel);margin-bottom:8px;}
   .cat-bar{display:flex;gap:6px;overflow-x:auto;padding:4px 0 8px;}
   .cat-bar .pill{white-space:nowrap;}
@@ -177,9 +177,11 @@ async function fetchJSON(path, timeoutMs=15000){
 
 async function loadScreenMeta(){
   try{
-    const m=await fetchJSON('data/screen/meta.json',8000);
+    const m=await fetchJSON('data/screen/meta.json',25000);
     if(m && Array.isArray(m.dates) && m.dates.length && Array.isArray(m.shards)){
       SCREEN_META=m; VER=m.version||null; CAL=m.dates.slice(); NAMES=m.names||{};
+      // 旧版本留下的缓存清掉，只留当前版本
+      try{ if(window.caches) caches.keys().then(ks=>ks.filter(k=>k.indexOf('screen-')===0&&k!=='screen-'+m.version).forEach(k=>caches.delete(k))); }catch(e){}
       return m;
     }
   }catch(e){}
@@ -724,36 +726,111 @@ function calcStats(trades){
 const FKEYS=['close','c50','c75','c90','zq','zq1'];
 let SD=null;   // {n,D,codes,F:{close,c50,c75,c90,zq,zq1:Float32Array(n*D)},idxOf}
 
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const SHARD_BUFS=[];     // 已下载好的分片（ArrayBuffer），失败的位置为空，重试时只补缺的
+let loadingScreen=false;
+
+// 取一个分片：先查浏览器缓存(同一版本只下载一次) -> 同源重试2次 -> 最后才试 raw.githubusercontent
+async function getShardBuf(m,i){
+  const sh=m.shards[i], rel='data/screen/'+sh.f;
+  const key=new URL(`./${rel}?v=${m.version}`,location.href).href;
+  let cache=null;
+  try{ if(window.caches) cache=await caches.open('screen-'+m.version); }catch(e){}
+  if(cache){
+    try{ const hit=await cache.match(key); if(hit){ const b=await hit.arrayBuffer(); if(b.byteLength===sh.len) return b; } }catch(e){}
+  }
+  const urls=[key,key,`https://raw.githubusercontent.com/${DATA_REPO}/${DATA_BRANCH}/${rel}?v=${m.version}`];
+  let last=new Error('fetch fail');
+  for(let a=0;a<urls.length;a++){
+    const ctrl=new AbortController(); const tm=setTimeout(()=>ctrl.abort(),45000);
+    try{
+      const r=await fetch(urls[a],{signal:ctrl.signal});
+      if(!r.ok) throw new Error('http '+r.status);
+      const b=await r.arrayBuffer(); clearTimeout(tm);
+      if(b.byteLength!==sh.len) throw new Error(`大小不符 ${b.byteLength}/${sh.len}`);
+      if(cache){ try{ await cache.put(key,new Response(b.slice(0))); }catch(e){} }
+      return b;
+    }catch(e){ clearTimeout(tm); last=e; await sleep(700*(a+1)); }
+  }
+  throw last;
+}
+
+// 解码一个分片：6个序列 x 每片n只股票 x D天，每个数是 varint(0=无数据，否则 zigzag(与上一个有效值的差)+1)
+function decodeShard(buf,n,D,F,base0,sP,sZ){
+  const u8=new Uint8Array(buf), L=u8.length; let p=0;
+  for(let ki=0;ki<6;ki++){
+    const arr=F[FKEYS[ki]], sc=ki>=4?sZ:sP;
+    for(let si=0;si<n;si++){
+      const off=(base0+si)*D; let prev=0;
+      for(let di=0;di<D;di++){
+        if(p>=L) throw new Error('分片数据被截断');
+        let x=u8[p++];
+        if(x&0x80){
+          x&=0x7f; let sh=7;
+          for(;;){ if(p>=L) throw new Error('分片数据被截断'); const c=u8[p++]; x|=(c&0x7f)<<sh; if(!(c&0x80)) break; sh+=7; if(sh>28) throw new Error('分片数据损坏'); }
+        }
+        if(x===0) continue;
+        const z=x-1; prev+=(z&1)?-((z+1)>>1):(z>>1);
+        arr[off+di]=prev/sc;
+      }
+    }
+  }
+  if(p!==L) throw new Error('分片长度不符');
+}
+
+function assembleScreen(m){
+  const D=m.dates.length, sP=m.pscale||1000, sZ=m.zscale||100;
+  const okIdx=[]; let n=0;
+  m.shards.forEach((sh,i)=>{ if(SHARD_BUFS[i]){ okIdx.push(i); n+=sh.n; } });
+  const F={}; FKEYS.forEach(k=>{ F[k]=new Float32Array(n*D).fill(NaN); });
+  const codes=[]; let base=0; const bad=[];
+  okIdx.forEach(i=>{
+    const sh=m.shards[i];
+    try{ decodeShard(SHARD_BUFS[i],sh.n,D,F,base,sP,sZ); }
+    catch(e){ SHARD_BUFS[i]=null; bad.push(i); return; }
+    for(let k=0;k<sh.n;k++) codes.push(m.codes[sh.s+k]);
+    base+=sh.n;
+  });
+  if(bad.length) return assembleScreen(m);   // 有坏片：丢掉后用剩下的重新拼
+  const idxOf=new Map(); codes.forEach((c,i)=>idxOf.set(c,i));
+  return {n:codes.length,D,codes,F,idxOf,partial:okIdx.length<m.shards.length,loaded:okIdx.length,total:m.shards.length};
+}
+
 async function loadScreenData(){
+  if(loadingScreen) return;
   const m=SCREEN_META; const lab=document.getElementById('sel-load');
+  lab.onclick=null; lab.style.textDecoration='none'; lab.style.color='';
   if(!m){ lab.textContent='未找到 data/screen，先运行一次 workflow'; return; }
-  const D=m.dates.length, total=m.shards.length, parts=new Array(total);
-  let done=0, next=0;
+  if(m.fmt!==2){ lab.textContent='数据格式较旧：等下一次自动抓取完成后会自动更新'; return; }
+  loadingScreen=true;
+  const total=m.shards.length;
+  const todo=[]; for(let i=0;i<total;i++) if(!SHARD_BUFS[i]) todo.push(i);
+  const sizeOf=i=>m.shards[i].len;
+  const allBytes=m.shards.reduce((a,x)=>a+x.len,0);
+  let doneBytes=m.shards.reduce((a,x,i)=>a+(SHARD_BUFS[i]?x.len:0),0);
+  const show=()=>{ const have=SHARD_BUFS.filter(Boolean).length; lab.textContent=`数据载入 ${have}/${total}（${(doneBytes/1048576).toFixed(1)}/${(allBytes/1048576).toFixed(1)}MB）`; };
+  show();
+  let next=0;
   const worker=async()=>{
-    while(next<total){
-      const i=next++;
-      parts[i]=await fetchJSON('data/screen/'+m.shards[i],60000);
-      done++; lab.textContent=`数据载入 ${done}/${total}`;
+    while(next<todo.length){
+      const i=todo[next++];
+      try{ SHARD_BUFS[i]=await getShardBuf(m,i); doneBytes+=sizeOf(i); show(); }
+      catch(e){ SHARD_BUFS[i]=null; }
     }
   };
-  try{ await Promise.all(Array.from({length:Math.min(4,total)},worker)); }
-  catch(e){ lab.textContent='载入失败：'+e.message+'（刷新重试）'; return; }
-  let n=0; parts.forEach(p=>{ n+=p.codes.length; });
-  const F={}; FKEYS.forEach(k=>{ F[k]=new Float32Array(n*D).fill(NaN); });
-  const sP=m.pscale||1000, sZ=m.zscale||100; const codes=[]; let s=0;
-  parts.forEach(p=>{
-    p.codes.forEach((c,ci)=>{
-      codes.push(c); const base=s*D;
-      FKEYS.forEach(k=>{
-        const row=p[k][ci], sc=(k==='zq'||k==='zq1')?sZ:sP, arr=F[k];
-        for(let d=0;d<D;d++){ const v=row[d]; if(v!=null) arr[base+d]=v/sc; }
-      });
-      s++;
-    });
-  });
-  const idxOf=new Map(); codes.forEach((c,i)=>idxOf.set(c,i));
-  SD={n,D,codes,F,idxOf};
-  lab.textContent=`已载入 ${n} 只 × ${D} 天`;
+  await Promise.all(Array.from({length:Math.min(3,todo.length||1)},worker));
+  loadingScreen=false;
+  if(!SHARD_BUFS.some(Boolean)){
+    lab.textContent='载入失败，点这里重试'; lab.style.textDecoration='underline'; lab.style.color='var(--up)'; lab.onclick=loadScreenData;
+    return;
+  }
+  SD=assembleScreen(m);
+  if(SD.partial){
+    lab.textContent=`⚠ 只载入 ${SD.n} 只（${SD.total-SD.loaded} 片失败），点这里补载`;
+    lab.style.textDecoration='underline'; lab.style.color='var(--up)'; lab.onclick=loadScreenData;
+  } else {
+    lab.textContent=`已载入 ${SD.n} 只 × ${SD.D} 天`;
+  }
   document.getElementById('run-sel-btn').classList.remove('off');
   document.getElementById('run-backtest-btn').classList.remove('off');
   refreshPreview();
@@ -862,7 +939,7 @@ function refreshPreview(){
   if(!rg||rg.empty){ prog.textContent=rg?rg.text:''; return; }
   let stocks=new Set(), times=0;
   runScan(SD,conds,rg.d0,rg.d1,(s)=>{ stocks.add(s); times++; });
-  prog.textContent=`${rg.text}：预计命中 ${stocks.size} 只 / ${times} 次`;
+  prog.textContent=`${rg.text}：预计命中 ${stocks.size} 只 / ${times} 次`+(SD.partial?`（⚠ 仅含已载入的 ${SD.n} 只）`:'');
 }
 
 // ============ 缩略图懒加载 ============
@@ -884,7 +961,7 @@ function itemOf(code){ return {code:codeToSecid(code),name:NAMES[code]||code,sho
 let LAST_SEL=null;
 const PAGE=40;
 function runSelect(){
-  if(!SD) return;
+  if(!SD){ document.getElementById('sel-progress').textContent='数据还在载入（'+document.getElementById('sel-load').textContent+'），载入完成后再点'; return; }
   const prog=document.getElementById('sel-progress'), resEl=document.getElementById('sel-results');
   document.getElementById('backtest-results').innerHTML='';
   const conds=compileSel(readCfg());
@@ -902,7 +979,7 @@ function runSelect(){
   });
   const ms=performance.now()-t0;
   LAST_SEL={rows,rg,conds,times,ms,sort:'pct',shown:0};
-  prog.textContent=`${rg.text}：命中 ${rows.length} 只 / ${times} 次，用时 ${ms.toFixed(0)}ms`;
+  prog.textContent=`${rg.text}：命中 ${rows.length} 只 / ${times} 次，用时 ${ms.toFixed(0)}ms`+(SD.partial?`（⚠ 仅含已载入的 ${SD.n} 只）`:'');
   renderSelResults();
 }
 function sortRows(rows,mode){
@@ -966,7 +1043,7 @@ function buildResultCard(r){
 
 // ============ 回测 ============
 function runBacktest(){
-  if(!SD) return;
+  if(!SD){ document.getElementById('sel-progress').textContent='数据还在载入（'+document.getElementById('sel-load').textContent+'），载入完成后再点'; return; }
   const out=document.getElementById('backtest-results'), prog=document.getElementById('sel-progress');
   const conds=compileSel(readCfg());
   if(!conds.length){ out.innerHTML='<div class="hint">至少设置一个条件</div>'; return; }
@@ -975,7 +1052,7 @@ function runBacktest(){
   const t0=performance.now();
   const {trades,pending}=doBacktest(SD,conds,rg.d0,rg.d1);
   const ms=performance.now()-t0;
-  prog.textContent=`${rg.text}：回测完成，用时 ${ms.toFixed(0)}ms`;
+  prog.textContent=`${rg.text}：回测完成，用时 ${ms.toFixed(0)}ms`+(SD.partial?`（⚠ 仅含已载入的 ${SD.n} 只）`:'');
   const st=calcStats(trades);
   if(!st){ out.innerHTML=`<div class="card"><div class="hint">没有可统计的交易${pending?`（命中 ${pending} 次都在最后一根K线上，还没有次日数据）`:''}</div></div>`; return; }
   const cls=v=>v>0?'up':v<0?'down':'flat';
