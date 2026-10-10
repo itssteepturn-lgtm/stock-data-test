@@ -42,8 +42,10 @@ case "$cmd" in
     cp "../$CODE_DIR/index.html" index.html
     touch .nojekyll
     if [ -d .git ]; then
-      changed=$(git status --porcelain -- data/stocks data/indices data/screen index.html .nojekyll | head -n 1)
-      if [ -z "$changed" ] && [ "${FORCE_PUBLISH:-0}" != "1" ]; then
+      # 注意：这里不能用 "| head -n 1"。改动文件有几千个时，head 提前退出会让 git 收到 SIGPIPE，
+      # 在 pipefail 下整个脚本以 141 退出（线上就是这样失败的）。用 wc -l 把输出读完。
+      changed=$(git status --porcelain -- data/stocks data/indices data/screen index.html .nojekyll | wc -l)
+      if [ "$changed" -eq 0 ] && [ "${FORCE_PUBLISH:-0}" != "1" ]; then
         echo "数据和网页都没有变化，不发布（休市日/已是最新）"
         exit 0
       fi
