@@ -157,7 +157,7 @@ function codeToSecid(code){
   if(/^(4|8)/.test(code)) return '0.'+code;
   return null;
 }
-function dispName(item){ return NAMES[item.short]||item.name||item.short; }
+function dispName(item){ if(item.type==='index') return item.name; /* 指数代码 000001 和个股 000001(平安银行) 重名，指数必须用自己的名字 */ return NAMES[item.short]||item.name||item.short; }
 
 // 只读自己仓库的静态数据：先同源(GitHub Pages)，失败再退到 raw.githubusercontent；不再用会缓存旧数据的 CDN
 async function fetchJSON(path, timeoutMs=15000){
