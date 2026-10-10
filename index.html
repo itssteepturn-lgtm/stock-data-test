@@ -117,6 +117,18 @@
     </div>
     <div id="sel-progress" class="hint"></div>
   </div>
+  <div class="section-label" style="margin-top:22px;"><span>策略寻优 · 全部组合</span></div>
+  <div class="card" id="opt-card" style="font-size:12px;">
+    <div class="sum-line" style="margin-top:0;">把 cost50/75/90、zq、zq1 的各种状态（今日/昨日的涨跌幅度、zq 值区间、变化幅度对比、上穿下穿/上下方）自动组合，逐个回测，按胜率排名取前三。</div>
+    <div class="cond-row"><label class="lbl">最多条件数</label><select id="opt-depth"><option value="2">2 个</option><option value="3" selected>3 个</option><option value="4">4 个（较慢）</option></select></div>
+    <div class="cond-row"><label class="lbl">最少交易数</label><input id="opt-min" type="number" value="300" inputmode="numeric"></div>
+    <div class="hint" style="text-align:left;padding:0 0 6px;">交易数低于它的组合不参与排名，防止只出现几次却全赢</div>
+    <div style="display:flex;gap:8px;"><div id="opt-run" class="btn off">开始寻优</div><div id="opt-stop" class="btn ghost" style="display:none;">停止</div></div>
+    <div id="opt-progress" class="hint"></div>
+    <div style="display:flex;gap:8px;align-items:center;margin-top:4px;"><div id="export-btn" class="btn ghost" style="font-size:11px;padding:4px 10px;">导出数据文件</div><span style="font-size:10px;color:var(--dim);">把已载入的选股数据存成一个文件（约11MB），发给 Claude 让它帮你测</span></div>
+  </div>
+  <div id="opt-results"></div>
+
   <div id="sel-results"></div>
   <div id="backtest-results"></div>
 
@@ -833,6 +845,7 @@ async function loadScreenData(){
   }
   document.getElementById('run-sel-btn').classList.remove('off');
   document.getElementById('run-backtest-btn').classList.remove('off');
+  document.getElementById('opt-run').classList.remove('off');
   refreshPreview();
 }
 
@@ -1105,6 +1118,267 @@ document.getElementById('reset-sel-btn').onclick=()=>{
   document.getElementById('sel-results').innerHTML=''; document.getElementById('backtest-results').innerHTML='';
   LAST_SEL=null; refreshPreview();
 };
+
+// ============ 策略寻优：把所有条件组合逐个回测，按胜率排名 ============
+// 搜索空间 = 若干"条件组"，每组里有互斥的几档，一个组合 = 从不同的组里各选一档（最多 maxDepth 组）。
+// 全部在 Web Worker 里跑，用的是已载入内存的 cost/zq 数据，不向任何地方请求，也不重新计算指标。
+const SEARCH_GROUPS=[];
+[['cost50','c50'],['cost75','c75'],['cost90','c90']].forEach(([k,src])=>['t','y'].forEach(day=>SEARCH_GROUPS.push({kind:'cost',k,src,day,nb:4})));
+['zq','zq1'].forEach(k=>['t','y'].forEach(day=>SEARCH_GROUPS.push({kind:'zqchg',k,src:k,day,nb:3})));
+['zq','zq1'].forEach(k=>['t','y'].forEach(day=>SEARCH_GROUPS.push({kind:'zqval',k,src:k,day,nb:4})));
+['zq','zq1'].forEach(k=>SEARCH_GROUPS.push({kind:'cmp',k,src:k,day:'t',nb:2}));
+['t','y'].forEach(day=>SEARCH_GROUPS.push({kind:'crossE',day,nb:2}));
+['t','y'].forEach(day=>SEARCH_GROUPS.push({kind:'pos',day,nb:2}));
+
+// 注意：searchCore 会被 toString() 塞进 Worker，必须完全自包含，不能引用外面的任何变量
+function searchCore(P, post){
+  const F=P.F, n=P.n, D=P.D, G=P.G, maxDepth=P.maxDepth, minN=P.minN, topK=P.topK, lateStart=P.lateStart;
+  const close=F.close, NG=G.length, t0=Date.now();
+  // ---- 1. 建立"交易样本"：每只股票每个有K线、且后面还有下一根K线的日子 = 一次可回测的买入 ----
+  let M=0;
+  for(let s=0;s<n;s++){ const b=s*D; let c=0; for(let d=0;d<D;d++) if(close[b+d]===close[b+d]) c++; if(c>1) M+=c-1; }
+  // zq / zq1 值区间的分档点：取全部有效值的四分位，保留1位小数
+  const th={};
+  ['zq','zq1'].forEach(k=>{
+    const arr=F[k]; const tmp=new Float32Array(arr.length); let m=0;
+    for(let i=0;i<arr.length;i++){ const v=arr[i]; if(v===v) tmp[m++]=v; }
+    const sub=tmp.subarray(0,m); sub.sort();
+    const q=f=>m?Math.round(sub[Math.min(m-1,Math.floor(m*f))]*10)/10:0;
+    th[k]=[q(0.25),q(0.5),q(0.75)];
+  });
+  const bins=new Array(NG); for(let g=0;g<NG;g++) bins[g]=new Uint8Array(M).fill(255);
+  const ret=new Float32Array(M), cday=new Uint8Array(M);
+  const vd=new Int16Array(D);
+  const arrOf=g=>F[G[g].src];
+  const srcArr=[]; for(let g=0;g<NG;g++) srcArr.push(G[g].src?F[G[g].src]:null);
+  const zq=F.zq, zq1=F.zq1;
+  let ci=0;
+  for(let s=0;s<n;s++){
+    const b=s*D; let k=0;
+    for(let d=0;d<D;d++) if(close[b+d]===close[b+d]) vd[k++]=d;
+    for(let j=0;j<k-1;j++){
+      const d=vd[j], nx=vd[j+1], p=j>=1?vd[j-1]:-1, pp=j>=2?vd[j-2]:-1, i=ci++;
+      ret[i]=(close[b+nx]/close[b+d]-1)*100; cday[i]=d;
+      for(let g=0;g<NG;g++){
+        const gg=G[g], kind=gg.kind; let bin=255;
+        if(kind==='cost'||kind==='zqchg'){
+          const a=gg.day==='t'?d:p, pr=gg.day==='t'?p:pp;
+          if(a>=0&&pr>=0){
+            const x=srcArr[g][b+a], y=srcArr[g][b+pr];
+            if(x===x&&y===y){
+              if(kind==='cost'){
+                if(y>0){ const ch=(x/y-1)*100; if(ch<0) bin=ch<=-1?0:1; else if(ch>0) bin=ch>=1?3:2; }
+              } else { const ch=x-y; if(ch<0) bin=0; else if(ch>0) bin=ch>=5?2:1; }
+            }
+          }
+        } else if(kind==='zqval'){
+          const a=gg.day==='t'?d:p;
+          if(a>=0){ const v=srcArr[g][b+a]; if(v===v){ const t=th[gg.src]; bin=v<t[0]?0:v<t[1]?1:v<t[2]?2:3; } }
+        } else if(kind==='cmp'){
+          if(d>=0&&p>=0&&pp>=0){
+            const x0=srcArr[g][b+d], x1=srcArr[g][b+p], x2=srcArr[g][b+pp];
+            if(x0===x0&&x1===x1&&x2===x2){ const tt=Math.abs(x0-x1), yy=Math.abs(x1-x2); if(tt>yy) bin=0; else if(tt<yy) bin=1; }
+          }
+        } else if(kind==='crossE'){
+          const a=gg.day==='t'?d:p, pr=gg.day==='t'?p:pp;
+          if(a>=0&&pr>=0){
+            const z=zq[b+a], z1=zq1[b+a], zp=zq[b+pr], z1p=zq1[b+pr];
+            if(z===z&&z1===z1&&zp===zp&&z1p===z1p){ if(zp<=z1p&&z>z1) bin=0; else if(zp>=z1p&&z<z1) bin=1; }
+          }
+        } else if(kind==='pos'){
+          const a=gg.day==='t'?d:p;
+          if(a>=0){ const z=zq[b+a], z1=zq1[b+a]; if(z===z&&z1===z1){ if(z>z1) bin=0; else if(z<z1) bin=1; } }
+        }
+        bins[g][i]=bin;
+      }
+    }
+  }
+  // ---- 基准：所有样本 ----
+  let bw=0,bs=0,bL=0,bwL=0; for(let i=0;i<M;i++){ const r=ret[i]; if(r>0) bw++; bs+=r; if(cday[i]>=lateStart){ bL++; if(r>0) bwL++; } }
+  const baseline={n:M,win:bw,sum:bs,nL:bL,winL:bwL};
+  post({type:'progress',stage:'built',M:M,ms:Date.now()-t0});
+
+  // ---- 2. 深度优先枚举所有组合；每一层只扫一遍父集合，一次得出下一组所有档位的统计 ----
+  const lists=[null]; for(let d=1;d<maxDepth;d++) lists.push(new Int32Array(M));
+  const hc=[],hw=[],hs=[],hcl=[],hwl=[];
+  for(let d=0;d<maxDepth;d++){ hc.push(new Int32Array(4)); hw.push(new Int32Array(4)); hs.push(new Float64Array(4)); hcl.push(new Int32Array(4)); hwl.push(new Int32Array(4)); }
+  const pathG=new Array(maxDepth), pathB=new Array(maxDepth);
+  const top=[]; const seen=new Set(); let evaluated=0, lastPost=Date.now();
+  function record(depth,c,w,sm,cL,wL){
+    const rate=w/c;
+    if(top.length>=topK){ const l=top[top.length-1]; if(rate<l.rate||(rate===l.rate&&c<=l.n)) return; }
+    const key=c+'|'+w+'|'+sm.toFixed(3); if(seen.has(key)) return; seen.add(key);
+    top.push({rate:rate,n:c,win:w,sum:sm,nL:cL,winL:wL,g:pathG.slice(0,depth),b:pathB.slice(0,depth)});
+    top.sort((a,b)=>b.rate-a.rate||b.n-a.n);
+    if(top.length>topK) top.length=topK;
+  }
+  function expand(len,list,depth,startG,parentN){
+    const cnt=hc[depth], win=hw[depth], sum=hs[depth], cL=hcl[depth], wL=hwl[depth];
+    for(let g=startG; g<NG; g++){
+      const bg=bins[g], nb=G[g].nb;
+      for(let b=0;b<nb;b++){ cnt[b]=0; win[b]=0; sum[b]=0; cL[b]=0; wL[b]=0; }
+      const total=list===null?M:len;
+      for(let q=0;q<total;q++){
+        const i=list===null?q:list[q]; const bb=bg[i]; if(bb===255) continue;
+        cnt[bb]++; const r=ret[i]; sum[bb]+=r; if(r>0) win[bb]++;
+        if(cday[i]>=lateStart){ cL[bb]++; if(r>0) wL[bb]++; }
+      }
+      for(let b=0;b<nb;b++){
+        const c=cnt[b]; if(c<minN) continue;
+        evaluated++;
+        const now=Date.now(); if(now-lastPost>250){ lastPost=now; post({type:'progress',stage:'search',evaluated:evaluated,ms:now-t0}); }
+        if(c===parentN) continue;            // 这一档没有缩小样本＝多余条件，跳过
+        pathG[depth]=g; pathB[depth]=b;
+        record(depth+1,c,win[b],sum[b],cL[b],wL[b]);
+        if(depth+1<maxDepth && g+1<NG){
+          const child=lists[depth+1]; let m=0;
+          for(let q=0;q<total;q++){ const i=list===null?q:list[q]; if(bg[i]===b) child[m++]=i; }
+          expand(m,child,depth+1,g+1,c);
+        }
+      }
+    }
+  }
+  expand(M,null,0,0,M+1);
+  return {top:top,baseline:baseline,th:th,evaluated:evaluated,ms:Date.now()-t0,M:M};
+}
+
+// ---- 寻优：档位文字 / 套用到选股面板的配置 ----
+const OPT_BIN_LABELS={
+  cost:['陡降(≤-1%)','小幅下降(-1~0%)','小幅上升(0~1%)','陡升(≥1%)'],
+  zqchg:['下降','小幅上升(0~5点)','陡升(≥5点)'],
+  cmp:['变化幅度大于昨日','变化幅度小于昨日'],
+  crossE:['zq 上穿 zq1','zq 下穿 zq1'],
+  pos:['zq 在 zq1 上方','zq 在 zq1 下方'],
+};
+function optAtomLabel(g,b,th){
+  const gg=SEARCH_GROUPS[g], day=gg.day==='t'?'今日':'昨日';
+  if(gg.kind==='zqval'){
+    const t=th[gg.src]; const L=[`<${t[0]}`,`${t[0]}~${t[1]}`,`${t[1]}~${t[2]}`,`≥${t[2]}`];
+    return `${day} ${gg.k} 值 ${L[b]}%`;
+  }
+  const txt=OPT_BIN_LABELS[gg.kind][b];
+  if(gg.kind==='crossE'||gg.kind==='pos') return `${day} ${txt}`;
+  return `${day} ${gg.k} ${txt}`;
+}
+// 把一个组合翻成选股面板的 cfg（和面板里手动设置完全等价，所以回测结果可以直接对上）
+function optComboCfg(gs,bs,th){
+  const cfg={y:{},t:{}};
+  const blank=()=>({st:'',mn:'',mx:'',vmn:'',vmx:'',cmp:''});
+  gs.forEach((g,idx)=>{
+    const gg=SEARCH_GROUPS[g], b=bs[idx], day=gg.day;
+    if(gg.kind==='crossE'){ cfg[day].cross=['up','down'][b]; return; }
+    if(gg.kind==='pos'){ if(!cfg[day].cross) cfg[day].cross=['above','below'][b]; return; }
+    const o=cfg[day][gg.k]||(cfg[day][gg.k]=blank());
+    if(gg.kind==='cost'){
+      const m=[{st:'sdn',mn:'1',mx:''},{st:'down',mn:'',mx:'1'},{st:'up',mn:'',mx:'1'},{st:'sup',mn:'1',mx:''}][b]; Object.assign(o,m);
+    } else if(gg.kind==='zqchg'){
+      const m=[{st:'down',mn:'',mx:''},{st:'up',mn:'',mx:'5'},{st:'sup',mn:'5',mx:''}][b]; Object.assign(o,m);
+    } else if(gg.kind==='zqval'){
+      const t=th[gg.src];
+      const m=[{vmn:'',vmx:String(t[0])},{vmn:String(t[0]),vmx:String(t[1])},{vmn:String(t[1]),vmx:String(t[2])},{vmn:String(t[2]),vmx:''}][b]; Object.assign(o,m);
+    } else if(gg.kind==='cmp'){ o.cmp=['gt','lt'][b]; }
+  });
+  return cfg;
+}
+function optApplyToPanel(cfg){
+  document.getElementById('reset-sel-btn').click();
+  const fire=(el,type)=>el.dispatchEvent(new Event(type,{bubbles:true}));
+  ['y','t'].forEach(day=>{
+    const c=cfg[day]; if(!c) return;
+    Object.keys(c).forEach(k=>{
+      const blk=document.querySelector(`#sel-panes .blk[data-day="${day}"][data-k="${k}"]`); if(!blk) return;
+      if(k==='cross'){ const el=blk.querySelector('.cross'); el.value=c.cross; fire(el,'change'); return; }
+      const o=c[k];
+      const st=blk.querySelector('.st'); if(st&&o.st){ st.value=o.st; fire(st,'change'); }
+      const set=(sel,v)=>{ const el=blk.querySelector(sel); if(el){ el.value=v; } };
+      if(o.st){ set('.mn',o.mn); set('.mx',o.mx); }
+      set('.vmn',o.vmn); set('.vmx',o.vmx);
+      const cm=blk.querySelector('.cmp'); if(cm&&o.cmp){ cm.value=o.cmp; fire(cm,'change'); }
+    });
+  });
+  const hasT=Object.keys(cfg.t||{}).length>0;
+  const tab=document.querySelector(`#sel-tabs .tab[data-day="${hasT?'t':'y'}"]`); if(tab) tab.click();
+  refreshPreview();
+}
+
+// ---- 寻优：运行 / 展示 ----
+let optWorker=null;
+function optStop(){ if(optWorker){ optWorker.terminate(); optWorker=null; } document.getElementById('opt-stop').style.display='none'; document.getElementById('opt-run').classList.remove('off'); }
+function optStats(trades,lateStart){
+  let n=0,w=0,sum=0,nE=0,wE=0,nL=0,wL=0;
+  trades.forEach(t=>{ n++; sum+=t.ret; const win=t.ret>0; if(win) w++; if(t.d>=lateStart){ nL++; if(win) wL++; } else { nE++; if(win) wE++; } });
+  return {n,w,avg:n?sum/n:0,nE,wE,nL,wL};
+}
+function optRender(res,lateStart){
+  const out=document.getElementById('opt-results'); out.innerHTML='';
+  const D=CAL.length; const th=res.th;
+  const top3=res.top.slice(0,3);
+  const bsl=res.baseline;
+  const head=document.createElement('div'); head.className='card';
+  head.innerHTML=`<div style="font-weight:600;">胜率前三的条件组合</div>
+    <div class="sum-line">已逐个回测 ${res.evaluated.toLocaleString()} 个组合（用时 ${(res.ms/1000).toFixed(1)} 秒）。每次命中当天收盘买，下一个交易日收盘卖，全部 ${D} 个交易日（${CAL[0]} ~ ${CAL[D-1]}）。<br>
+    对照基准：全市场任意一只股票在任意一天买入，次日胜率 <b>${(bsl.win/bsl.n*100).toFixed(1)}%</b>，平均 ${fmtPct(bsl.sum/bsl.n)}（${bsl.n.toLocaleString()} 次）。<br>
+    <span style="color:#e0b23c;">组合很多，总会有几个“碰巧”表现很好；“后1/3时段”的胜率更能说明它稳不稳。</span></div>`;
+  out.appendChild(head);
+  if(!top3.length){ const c=document.createElement('div'); c.className='card'; c.innerHTML='<div class="hint">没有交易数不少于下限的组合，把“最少交易数”调小再试</div>'; out.appendChild(c); return; }
+  const cls=v=>v>0?'up':v<0?'down':'flat';
+  top3.forEach((r,i)=>{
+    const cfg=optComboCfg(r.g,r.b,th);
+    // 用选股面板同一套逻辑再精确回测一遍，显示的就是你点“回测”会看到的数字
+    const bt=doBacktest(SD,compileSel(cfg),0,D-1);
+    const st=optStats(bt.trades,lateStart);
+    const labels=r.g.map((g,idx)=>optAtomLabel(g,r.b[idx],th));
+    const pc=(w,n)=>n?(w/n*100).toFixed(1)+'%':'--';
+    const div=document.createElement('div'); div.className='card';
+    div.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
+        <div style="font-size:15px;font-weight:600;">第 ${i+1} 名</div>
+        <div><span style="font-size:20px;font-weight:700;" class="${st.w/st.n>=0.5?'up':'down'}">${pc(st.w,st.n)}</span> <span style="color:var(--dim);font-size:11px;">胜率</span></div></div>
+      <div class="chips" style="margin:6px 0;">${labels.map(l=>`<span class="chip" style="cursor:default;color:var(--text);">${l}</span>`).join('')}</div>
+      <div class="stat-grid"><div class="stat"><div class="k">交易次数</div><div class="v">${st.n}</div></div>
+        <div class="stat"><div class="k">平均收益</div><div class="v ${cls(st.avg)}">${fmtPct(st.avg)}</div></div>
+        <div class="stat"><div class="k">涉及股票</div><div class="v">${new Set(bt.trades.map(t=>t.s)).size}</div></div></div>
+      <div class="sum-line" style="margin:0 0 8px;">前2/3时段 胜率 ${pc(st.wE,st.nE)}（${st.nE}次） · 后1/3时段 胜率 ${pc(st.wL,st.nL)}（${st.nL}次）</div>
+      <div style="display:flex;gap:8px;"><div class="btn opt-apply">套用到选股面板</div><div class="btn ghost opt-bt">套用并看回测详情</div></div>`;
+    div.querySelector('.opt-apply').onclick=()=>{ optApplyToPanel(cfg); document.getElementById('sel-card').scrollIntoView({behavior:'smooth'}); };
+    div.querySelector('.opt-bt').onclick=()=>{ optApplyToPanel(cfg); runBacktest(); document.getElementById('backtest-results').scrollIntoView({behavior:'smooth'}); };
+    out.appendChild(div);
+  });
+}
+function optRun(){
+  const prog=document.getElementById('opt-progress');
+  if(!SD){ prog.textContent='数据还在载入（'+document.getElementById('sel-load').textContent+'），载入完成后再点'; return; }
+  if(optWorker) return;
+  const maxDepth=parseInt(document.getElementById('opt-depth').value,10)||3;
+  const minN=Math.max(30,parseInt(document.getElementById('opt-min').value,10)||300);
+  const D=SD.D, lateStart=D-Math.round(D/3);
+  document.getElementById('opt-results').innerHTML='';
+  document.getElementById('opt-run').classList.add('off'); document.getElementById('opt-stop').style.display='';
+  prog.textContent='准备样本…';
+  const src='const searchCore='+searchCore.toString()+';self.onmessage=function(e){var res=searchCore(e.data,function(m){self.postMessage(m);});self.postMessage({type:"done",res:res});};';
+  try{ optWorker=new Worker(URL.createObjectURL(new Blob([src],{type:'text/javascript'}))); }
+  catch(e){ prog.textContent='这个浏览器不支持后台计算：'+e.message; optStop(); return; }
+  optWorker.onmessage=ev=>{
+    const m=ev.data;
+    if(m.type==='progress'){
+      prog.textContent=m.stage==='built'?`样本 ${m.M.toLocaleString()} 个已就绪，开始枚举组合…`:`已评估 ${m.evaluated.toLocaleString()} 个组合，用时 ${(m.ms/1000).toFixed(0)} 秒…`;
+    } else if(m.type==='done'){
+      optStop(); prog.textContent=`完成：评估 ${m.res.evaluated.toLocaleString()} 个组合` + (SD.partial?`（⚠ 仅含已载入的 ${SD.n} 只）`:'');
+      optRender(m.res,lateStart);
+    }
+  };
+  optWorker.onerror=ev=>{ prog.textContent='计算出错：'+(ev.message||''); optStop(); };
+  optWorker.postMessage({F:SD.F,n:SD.n,D:SD.D,G:SEARCH_GROUPS,maxDepth:maxDepth,minN:minN,topK:20,lateStart:lateStart});
+}
+document.getElementById('export-btn').onclick=()=>{
+  const prog=document.getElementById('opt-progress'), m=SCREEN_META;
+  if(!m||m.fmt!==2||SHARD_BUFS.filter(Boolean).length!==m.shards.length){ prog.textContent='数据还没载入完整，载入完成后再导出'; return; }
+  const b64=buf=>{ const u=new Uint8Array(buf); let str=''; for(let i=0;i<u.length;i+=0x8000) str+=String.fromCharCode.apply(null,u.subarray(i,i+0x8000)); return btoa(str); };
+  const blob=new Blob([JSON.stringify({meta:m,shards:SHARD_BUFS.map(b64)})],{type:'application/json'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='screen-'+m.last+'.json';
+  document.body.appendChild(a); a.click(); a.remove(); prog.textContent='已导出 screen-'+m.last+'.json（在“下载”里），把它发给我';
+};
+document.getElementById('opt-run').onclick=optRun;
+document.getElementById('opt-stop').onclick=()=>{ optStop(); document.getElementById('opt-progress').textContent='已停止'; };
 
 // ============ 启动 ============
 (async()=>{
