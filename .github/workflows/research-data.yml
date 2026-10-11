@@ -1,0 +1,50 @@
+name: research-data
+
+# 手动运行：生成约3年的研究数据（开/高/低/收/成交量/换手率 + cost/zq），放进网页的 data/research/ 供下载。
+# 和每日更新(update-data)互不影响；大约需要 2~3 小时。没做完也没关系：再运行一次会接着做。
+on:
+  workflow_dispatch:
+    inputs:
+      rebuild:
+        description: 'false=接着做(默认)  true=全部丢掉重做'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+concurrency:
+  group: site-publish
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  research:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: code
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install deps
+        run: pip install baostock
+
+      - name: Load previous data (gh-pages)
+        run: bash code/scripts/site.sh prepare
+
+      - name: Fetch 3-year research data (baostock)
+        timeout-minutes: 335
+        working-directory: site
+        run: python ../code/scripts/fetch-research.py --rebuild "${{ github.event.inputs.rebuild || 'false' }}" --max-minutes 320
+
+      - name: Publish (single commit, history never grows)
+        if: always()
+        run: bash code/scripts/site.sh publish
