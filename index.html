@@ -117,10 +117,16 @@
     </div>
     <div id="sel-progress" class="hint"></div>
   </div>
+  <div class="section-label" style="margin-top:22px;"><span>研究数据 · 约3年</span><span id="rs-state" style="font-size:10px;"></span></div>
+  <div class="card" id="rs-card" style="font-size:12px;">
+    <div class="sum-line" style="margin-top:0;">含开盘、最高、最低、收盘、成交量、换手率，以及 cost50/75/90、zq、zq1。只用于复盘研究，不影响上面的选股和回测。点下面的文件逐个下载（在“下载”里），再发给 Claude 分析。</div>
+    <div id="rs-list" style="display:flex;flex-direction:column;gap:6px;"></div>
+  </div>
+
   <div class="section-label" style="margin-top:22px;"><span>策略寻优 · 全部组合</span></div>
   <div class="card" id="opt-card" style="font-size:12px;">
-    <div class="sum-line" style="margin-top:0;">把 cost50/75/90、zq、zq1 的各种状态（今日/昨日的涨跌幅度、zq 值区间、变化幅度对比、上穿下穿/上下方）自动组合，逐个回测，按胜率排名取前三。</div>
-    <div class="cond-row"><label class="lbl">最多条件数</label><select id="opt-depth"><option value="2">2 个</option><option value="3" selected>3 个</option><option value="4">4 个（较慢）</option></select></div>
+    <div class="sum-line" style="margin-top:0;">把 cost50/75/90、zq、zq1 的各种状态自动组合并逐个回测，按胜率排名取前三。每个条件都会用不同的数值试：涨跌幅度（如 ≥0.5% / 1% / 2% / 3%）、zq 的值区间（如 <10 / 10~30 / 50~70 / ≥80）等，共 280 种单条件。</div>
+    <div class="cond-row"><label class="lbl">最多条件数</label><select id="opt-depth"><option value="2">2 个（约半分钟）</option><option value="3" selected>3 个（几分钟）</option></select></div>
     <div class="cond-row"><label class="lbl">最少交易数</label><input id="opt-min" type="number" value="300" inputmode="numeric"></div>
     <div class="hint" style="text-align:left;padding:0 0 6px;">交易数低于它的组合不参与排名，防止只出现几次却全赢</div>
     <div style="display:flex;gap:8px;"><div id="opt-run" class="btn off">开始寻优</div><div id="opt-stop" class="btn ghost" style="display:none;">停止</div></div>
@@ -1119,39 +1125,72 @@ document.getElementById('reset-sel-btn').onclick=()=>{
   LAST_SEL=null; refreshPreview();
 };
 
-// ============ 策略寻优：把所有条件组合逐个回测，按胜率排名 ============
-// 搜索空间 = 若干"条件组"，每组里有互斥的几档，一个组合 = 从不同的组里各选一档（最多 maxDepth 组）。
-// 全部在 Web Worker 里跑，用的是已载入内存的 cost/zq 数据，不向任何地方请求，也不重新计算指标。
-const SEARCH_GROUPS=[];
-[['cost50','c50'],['cost75','c75'],['cost90','c90']].forEach(([k,src])=>['t','y'].forEach(day=>SEARCH_GROUPS.push({kind:'cost',k,src,day,nb:4})));
-['zq','zq1'].forEach(k=>['t','y'].forEach(day=>SEARCH_GROUPS.push({kind:'zqchg',k,src:k,day,nb:3})));
-['zq','zq1'].forEach(k=>['t','y'].forEach(day=>SEARCH_GROUPS.push({kind:'zqval',k,src:k,day,nb:4})));
-['zq','zq1'].forEach(k=>SEARCH_GROUPS.push({kind:'cmp',k,src:k,day:'t',nb:2}));
-['t','y'].forEach(day=>SEARCH_GROUPS.push({kind:'crossE',day,nb:2}));
-['t','y'].forEach(day=>SEARCH_GROUPS.push({kind:'pos',day,nb:2}));
+// ============ 策略寻优（带不同参数数值）============
+// 每个"条件组"（如 今日cost50涨跌幅、昨日zq1值…）里有很多档"原子条件"，各用不同的数值区间；
+// 一个组合 = 从不同的组里各选一个原子条件（最多 maxDepth 个），逐个回测全部历史。
+function buildSearchSpace(){
+  const INF=Infinity, EPS=1e-6, G=[];
+  const f=v=>String(+v.toFixed(2));
+  // 涨跌幅类（cost 单位 %，zq/zq1 单位 点）：用同一套区间写法，生成"上升/下降 + 幅度区间"
+  const chgAtoms=(unit,ups,smalls,bands)=>{
+    const at=[], add=(lo,hi)=>{
+      let patch,label;
+      if(lo>=EPS-1e-12){  // 上升侧
+        patch={st:'up',mn:lo>EPS*2?String(lo):'',mx:hi<INF?String(hi):''};
+        label=(lo<=EPS*2?'上升':'上升')+(lo>EPS*2&&hi<INF?` ${f(lo)}~${f(hi)}${unit}`:lo>EPS*2?` ≥${f(lo)}${unit}`:hi<INF?` ≤${f(hi)}${unit}`:'');
+      } else {            // 下降侧
+        patch={st:'down',mn:hi<-EPS*2?String(-hi):'',mx:lo>-INF?String(-lo):''};
+        label='下降'+(hi<-EPS*2&&lo>-INF?` ${f(-hi)}~${f(-lo)}${unit}`:hi<-EPS*2?` ≥${f(-hi)}${unit}`:lo>-INF?` ≤${f(-lo)}${unit}`:'');
+      }
+      at.push({lo:lo,hi:hi,patch:patch,label:label});
+    };
+    add(EPS,INF); add(-INF,-EPS);                         // 上升 / 下降（不限幅度）
+    smalls.forEach(t=>{ add(EPS,t); add(-t,-EPS); });     // 小幅
+    ups.forEach(t=>{ add(t,INF); add(-INF,-t); });        // 陡
+    bands.forEach(([a,b])=>{ add(a,b); add(-b,-a); });    // 区间
+    return at;
+  };
+  [['cost50','c50'],['cost75','c75'],['cost90','c90']].forEach(([k,src])=>['t','y'].forEach(day=>
+    G.push({kind:'cost',k:k,src:src,day:day,atoms:chgAtoms('%',[0.5,1,2,3],[0.5,1,2],[[0.5,2],[1,3]])})));
+  ['zq','zq1'].forEach(k=>['t','y'].forEach(day=>
+    G.push({kind:'zqchg',k:k,src:k,day:day,atoms:chgAtoms('点',[3,5,10,20],[2,5,10],[[5,20]])})));
+  // zq / zq1 的值：各种上限、下限、20宽的区间
+  ['zq','zq1'].forEach(k=>['t','y'].forEach(day=>{
+    const at=[]; const add=(lo,hi)=>{ at.push({lo:lo,hi:hi,patch:{vmn:lo>-INF?String(lo):'',vmx:hi<INF?String(hi===101?100:hi):''},
+      label:`值 ${lo===-INF?'<'+hi:hi===INF?'≥'+lo:lo+'~'+(hi===101?100:hi)}%`}); };
+    [10,20,30,40,50].forEach(t=>add(-INF,t)); [50,60,70,80,90].forEach(t=>add(t,INF));
+    for(let a=0;a<=80;a+=10) add(a,a+20===100?101:a+20);
+    G.push({kind:'zqval',k:k,src:k,day:day,atoms:at});
+  }));
+  ['zq','zq1'].forEach(k=>G.push({kind:'cmp',k:k,src:k,day:'t',atoms:[
+    {lo:0,hi:1,patch:{cmp:'gt'},label:'变化幅度大于昨日'},{lo:1,hi:2,patch:{cmp:'lt'},label:'变化幅度小于昨日'}]}));
+  ['t','y'].forEach(day=>G.push({kind:'crossE',day:day,atoms:[
+    {lo:0,hi:1,patch:{cross:'up'},label:'zq 上穿 zq1'},{lo:1,hi:2,patch:{cross:'down'},label:'zq 下穿 zq1'}]}));
+  ['t','y'].forEach(day=>G.push({kind:'pos',day:day,atoms:[
+    {lo:0,hi:1,patch:{cross:'above'},label:'zq 在 zq1 上方'},{lo:1,hi:2,patch:{cross:'below'},label:'zq 在 zq1 下方'}]}));
+  // 数值组：由全部原子的边界生成分桶边界（桶 i 表示 edges[i-1] <= v < edges[i]）
+  G.forEach(g=>{
+    if(g.kind==='cmp'||g.kind==='crossE'||g.kind==='pos'){ g.edges=null; g.nb=2; return; }
+    const set={}; g.atoms.forEach(a=>{ if(isFinite(a.lo)) set[a.lo]=1; if(isFinite(a.hi)) set[a.hi]=1; });
+    g.edges=Object.keys(set).map(Number).sort((a,b)=>a-b); g.nb=g.edges.length+1;
+    g.atoms.forEach(a=>{ a.blo=isFinite(a.lo)?g.edges.indexOf(a.lo)+1:0; a.bhi=isFinite(a.hi)?g.edges.indexOf(a.hi)+1:g.nb; });
+  });
+  G.forEach(g=>{ if(!g.edges) g.atoms.forEach(a=>{ a.blo=a.lo; a.bhi=a.hi; }); });
+  return G;
+}
 
-// 注意：searchCore 会被 toString() 塞进 Worker，必须完全自包含，不能引用外面的任何变量
+// 注意：searchCore 会被 toString() 塞进 Worker，必须完全自包含
 function searchCore(P, post){
-  const F=P.F, n=P.n, D=P.D, G=P.G, maxDepth=P.maxDepth, minN=P.minN, topK=P.topK, lateStart=P.lateStart;
+  const F=P.F, n=P.n, D=P.D, G=P.G, maxDepth=P.maxDepth, minN=P.minN, topK=P.topK, lateStart=P.lateStart, skip=P.skipMask||null;
   const close=F.close, NG=G.length, t0=Date.now();
-  // ---- 1. 建立"交易样本"：每只股票每个有K线、且后面还有下一根K线的日子 = 一次可回测的买入 ----
   let M=0;
   for(let s=0;s<n;s++){ const b=s*D; let c=0; for(let d=0;d<D;d++) if(close[b+d]===close[b+d]) c++; if(c>1) M+=c-1; }
-  // zq / zq1 值区间的分档点：取全部有效值的四分位，保留1位小数
-  const th={};
-  ['zq','zq1'].forEach(k=>{
-    const arr=F[k]; const tmp=new Float32Array(arr.length); let m=0;
-    for(let i=0;i<arr.length;i++){ const v=arr[i]; if(v===v) tmp[m++]=v; }
-    const sub=tmp.subarray(0,m); sub.sort();
-    const q=f=>m?Math.round(sub[Math.min(m-1,Math.floor(m*f))]*10)/10:0;
-    th[k]=[q(0.25),q(0.5),q(0.75)];
-  });
-  const bins=new Array(NG); for(let g=0;g<NG;g++) bins[g]=new Uint8Array(M).fill(255);
-  const ret=new Float32Array(M), cday=new Uint8Array(M);
+  const bk=new Array(NG); for(let g=0;g<NG;g++) bk[g]=new Uint8Array(M).fill(255);
+  const ret=new Float32Array(M), cday=new Uint8Array(M), inU=new Uint8Array(M);
   const vd=new Int16Array(D);
-  const arrOf=g=>F[G[g].src];
   const srcArr=[]; for(let g=0;g<NG;g++) srcArr.push(G[g].src?F[G[g].src]:null);
   const zq=F.zq, zq1=F.zq1;
+  const bucket=(edges,v)=>{ let i=0; while(i<edges.length&&v>=edges[i]) i++; return i; };
   let ci=0;
   for(let s=0;s<n;s++){
     const b=s*D; let k=0;
@@ -1159,125 +1198,122 @@ function searchCore(P, post){
     for(let j=0;j<k-1;j++){
       const d=vd[j], nx=vd[j+1], p=j>=1?vd[j-1]:-1, pp=j>=2?vd[j-2]:-1, i=ci++;
       ret[i]=(close[b+nx]/close[b+d]-1)*100; cday[i]=d;
+      if(skip&&skip[b+d]){ inU[i]=0; continue; }   // 买不到的样本（如涨停）不参与
+      inU[i]=1;
       for(let g=0;g<NG;g++){
-        const gg=G[g], kind=gg.kind; let bin=255;
+        const gg=G[g], kind=gg.kind; let v=NaN, id=255;
         if(kind==='cost'||kind==='zqchg'){
           const a=gg.day==='t'?d:p, pr=gg.day==='t'?p:pp;
-          if(a>=0&&pr>=0){
-            const x=srcArr[g][b+a], y=srcArr[g][b+pr];
-            if(x===x&&y===y){
-              if(kind==='cost'){
-                if(y>0){ const ch=(x/y-1)*100; if(ch<0) bin=ch<=-1?0:1; else if(ch>0) bin=ch>=1?3:2; }
-              } else { const ch=x-y; if(ch<0) bin=0; else if(ch>0) bin=ch>=5?2:1; }
-            }
-          }
+          if(a>=0&&pr>=0){ const x=srcArr[g][b+a], y=srcArr[g][b+pr];
+            if(x===x&&y===y){ if(kind==='cost'){ if(y>0) v=(x/y-1)*100; } else v=x-y; } }
+          if(v===v) id=bucket(gg.edges,v);
         } else if(kind==='zqval'){
           const a=gg.day==='t'?d:p;
-          if(a>=0){ const v=srcArr[g][b+a]; if(v===v){ const t=th[gg.src]; bin=v<t[0]?0:v<t[1]?1:v<t[2]?2:3; } }
+          if(a>=0){ v=srcArr[g][b+a]; if(v===v) id=bucket(gg.edges,v); }
         } else if(kind==='cmp'){
-          if(d>=0&&p>=0&&pp>=0){
-            const x0=srcArr[g][b+d], x1=srcArr[g][b+p], x2=srcArr[g][b+pp];
-            if(x0===x0&&x1===x1&&x2===x2){ const tt=Math.abs(x0-x1), yy=Math.abs(x1-x2); if(tt>yy) bin=0; else if(tt<yy) bin=1; }
-          }
+          if(p>=0&&pp>=0){ const x0=srcArr[g][b+d], x1=srcArr[g][b+p], x2=srcArr[g][b+pp];
+            if(x0===x0&&x1===x1&&x2===x2){ const tt=Math.abs(x0-x1), yy=Math.abs(x1-x2); if(tt>yy) id=0; else if(tt<yy) id=1; } }
         } else if(kind==='crossE'){
           const a=gg.day==='t'?d:p, pr=gg.day==='t'?p:pp;
-          if(a>=0&&pr>=0){
-            const z=zq[b+a], z1=zq1[b+a], zp=zq[b+pr], z1p=zq1[b+pr];
-            if(z===z&&z1===z1&&zp===zp&&z1p===z1p){ if(zp<=z1p&&z>z1) bin=0; else if(zp>=z1p&&z<z1) bin=1; }
-          }
+          if(a>=0&&pr>=0){ const z=zq[b+a], z1=zq1[b+a], zp=zq[b+pr], z1p=zq1[b+pr];
+            if(z===z&&z1===z1&&zp===zp&&z1p===z1p){ if(zp<=z1p&&z>z1) id=0; else if(zp>=z1p&&z<z1) id=1; } }
         } else if(kind==='pos'){
           const a=gg.day==='t'?d:p;
-          if(a>=0){ const z=zq[b+a], z1=zq1[b+a]; if(z===z&&z1===z1){ if(z>z1) bin=0; else if(z<z1) bin=1; } }
+          if(a>=0){ const z=zq[b+a], z1=zq1[b+a]; if(z===z&&z1===z1){ if(z>z1) id=0; else if(z<z1) id=1; } }
         }
-        bins[g][i]=bin;
+        bk[g][i]=id;
       }
     }
   }
-  // ---- 基准：所有样本 ----
-  let bw=0,bs=0,bL=0,bwL=0; for(let i=0;i<M;i++){ const r=ret[i]; if(r>0) bw++; bs+=r; if(cday[i]>=lateStart){ bL++; if(r>0) bwL++; } }
-  const baseline={n:M,win:bw,sum:bs,nL:bL,winL:bwL};
-  post({type:'progress',stage:'built',M:M,ms:Date.now()-t0});
+  let N0=0,bw=0,bs=0,bL=0,bwL=0;
+  for(let i=0;i<M;i++){ if(!inU[i]) continue; const r=ret[i]; N0++; if(r>0) bw++; bs+=r; if(cday[i]>=lateStart){ bL++; if(r>0) bwL++; } }
+  const baseline={n:N0,win:bw,sum:bs,nL:bL,winL:bwL};
+  post({type:'progress',stage:'built',M:N0,ms:Date.now()-t0});
 
-  // ---- 2. 深度优先枚举所有组合；每一层只扫一遍父集合，一次得出下一组所有档位的统计 ----
-  const lists=[null]; for(let d=1;d<maxDepth;d++) lists.push(new Int32Array(M));
-  const hc=[],hw=[],hs=[],hcl=[],hwl=[];
-  for(let d=0;d<maxDepth;d++){ hc.push(new Int32Array(4)); hw.push(new Int32Array(4)); hs.push(new Float64Array(4)); hcl.push(new Int32Array(4)); hwl.push(new Int32Array(4)); }
-  const pathG=new Array(maxDepth), pathB=new Array(maxDepth);
+  // 样本集合 = 参与的样本；list===null 表示"全部参与样本"，为统一处理先建一个索引表
+  const all=new Int32Array(N0); { let q=0; for(let i=0;i<M;i++) if(inU[i]) all[q++]=i; }
+  const lists=[all]; for(let d=1;d<maxDepth;d++) lists.push(new Int32Array(N0));
+  const MAXB=24;
+  const mk=(T)=>{ const a=[]; for(let d=0;d<maxDepth;d++) a.push(new T(MAXB+1)); return a; };
+  const hc=mk(Int32Array),hw=mk(Int32Array),hs=mk(Float64Array),hcl=mk(Int32Array),hwl=mk(Int32Array);
+  const pathG=new Array(maxDepth), pathA=new Array(maxDepth);
   const top=[]; const seen=new Set(); let evaluated=0, lastPost=Date.now();
   function record(depth,c,w,sm,cL,wL){
     const rate=w/c;
     if(top.length>=topK){ const l=top[top.length-1]; if(rate<l.rate||(rate===l.rate&&c<=l.n)) return; }
     const key=c+'|'+w+'|'+sm.toFixed(3); if(seen.has(key)) return; seen.add(key);
-    top.push({rate:rate,n:c,win:w,sum:sm,nL:cL,winL:wL,g:pathG.slice(0,depth),b:pathB.slice(0,depth)});
-    top.sort((a,b)=>b.rate-a.rate||b.n-a.n);
+    top.push({rate:rate,n:c,win:w,sum:sm,nL:cL,winL:wL,g:pathG.slice(0,depth),a:pathA.slice(0,depth)});
+    top.sort((x,y)=>y.rate-x.rate||y.n-x.n);
     if(top.length>topK) top.length=topK;
   }
   function expand(len,list,depth,startG,parentN){
     const cnt=hc[depth], win=hw[depth], sum=hs[depth], cL=hcl[depth], wL=hwl[depth];
     for(let g=startG; g<NG; g++){
-      const bg=bins[g], nb=G[g].nb;
-      for(let b=0;b<nb;b++){ cnt[b]=0; win[b]=0; sum[b]=0; cL[b]=0; wL[b]=0; }
-      const total=list===null?M:len;
-      for(let q=0;q<total;q++){
-        const i=list===null?q:list[q]; const bb=bg[i]; if(bb===255) continue;
-        cnt[bb]++; const r=ret[i]; sum[bb]+=r; if(r>0) win[bb]++;
-        if(cday[i]>=lateStart){ cL[bb]++; if(r>0) wL[bb]++; }
+      const bg=bk[g], nb=G[g].nb, atoms=G[g].atoms;
+      for(let b=0;b<=nb;b++){ cnt[b]=0; win[b]=0; sum[b]=0; cL[b]=0; wL[b]=0; }
+      for(let q=0;q<len;q++){
+        const i=list[q]; const bb=bg[i]; if(bb===255) continue;
+        cnt[bb+1]++; const r=ret[i]; sum[bb+1]+=r; if(r>0) win[bb+1]++;
+        if(cday[i]>=lateStart){ cL[bb+1]++; if(r>0) wL[bb+1]++; }
       }
-      for(let b=0;b<nb;b++){
-        const c=cnt[b]; if(c<minN) continue;
+      for(let b=1;b<=nb;b++){ cnt[b]+=cnt[b-1]; win[b]+=win[b-1]; sum[b]+=sum[b-1]; cL[b]+=cL[b-1]; wL[b]+=wL[b-1]; }   // 前缀和
+      for(let ai=0;ai<atoms.length;ai++){
+        const A=atoms[ai], lo=A.blo, hi=A.bhi;
+        const c=cnt[hi]-cnt[lo]; if(c<minN) continue;
         evaluated++;
         const now=Date.now(); if(now-lastPost>250){ lastPost=now; post({type:'progress',stage:'search',evaluated:evaluated,ms:now-t0}); }
-        if(c===parentN) continue;            // 这一档没有缩小样本＝多余条件，跳过
-        pathG[depth]=g; pathB[depth]=b;
-        record(depth+1,c,win[b],sum[b],cL[b],wL[b]);
+        if(c===parentN) continue;
+        pathG[depth]=g; pathA[depth]=ai;
+        record(depth+1,c,win[hi]-win[lo],sum[hi]-sum[lo],cL[hi]-cL[lo],wL[hi]-wL[lo]);
         if(depth+1<maxDepth && g+1<NG){
           const child=lists[depth+1]; let m=0;
-          for(let q=0;q<total;q++){ const i=list===null?q:list[q]; if(bg[i]===b) child[m++]=i; }
+          for(let q=0;q<len;q++){ const i=list[q]; const bb=bg[i]; if(bb>=lo&&bb<hi) child[m++]=i; }
           expand(m,child,depth+1,g+1,c);
         }
       }
     }
   }
-  expand(M,null,0,0,M+1);
-  return {top:top,baseline:baseline,th:th,evaluated:evaluated,ms:Date.now()-t0,M:M};
+  expand(N0,all,0,0,N0+1);
+
+  // ---- 排名：把"只是参数略有不同的同一类组合"合并（样本重叠>=50%算同类，只留胜率最高的）----
+  // 同时算出每个组合的"分散度"：命中分布在多少个交易日、最集中的一天占多大比例。
+  // 若命中只集中在少数几天（比如某次大跌后的反弹日），说明它更像"碰上了那几天的行情"，不是稳定规律。
+  const memb=(r)=>{ const f=new Uint8Array(M), dh=new Int32Array(D); let c=0;
+    for(let q=0;q<N0;q++){ const i=all[q]; let ok=1;
+      for(let t=0;t<r.g.length;t++){ const A=G[r.g[t]].atoms[r.a[t]], bb=bk[r.g[t]][i]; if(bb===255||bb<A.blo||bb>=A.bhi){ ok=0; break; } }
+      if(ok){ f[i]=1; c++; dh[cday[i]]++; } }
+    let days=0,mx=0; for(let d=0;d<D;d++){ if(dh[d]>0) days++; if(dh[d]>mx) mx=dh[d]; }
+    return {f:f,c:c,days:days,maxShare:c?mx/c:1}; };
+  const rank=(filter)=>{
+    const picks=[], flags=[];
+    for(let ri=0;ri<top.length;ri++){
+      const r=top[ri]; if(!r.m) r.m=memb(r);
+      const m=r.m; if(filter&&!filter(m)) continue;
+      let dup=-1;
+      for(let pi=0;pi<picks.length;pi++){
+        const pf=flags[pi].f; let inter=0; for(let q=0;q<N0;q++){ const i=all[q]; if(m.f[i]&&pf[i]) inter++; }
+        if(inter>=0.5*Math.min(m.c,flags[pi].c)){ dup=pi; break; }
+      }
+      if(dup>=0){ const p=picks[dup]; p.variants++; p.vMin=Math.min(p.vMin,r.rate); continue; }
+      const o={rate:r.rate,n:r.n,win:r.win,sum:r.sum,nL:r.nL,winL:r.winL,g:r.g,a:r.a,days:m.days,maxShare:m.maxShare,variants:0,vMin:r.rate};
+      picks.push(o); flags.push(m);
+      if(picks.length>=P.keep && ri>=P.scanTo) break;
+    }
+    return picks;
+  };
+  const picks=rank(null);
+  const picksBroad=rank(m=>m.days>=P.minDays&&m.maxShare<=P.maxShare);
+  return {picks:picks,picksBroad:picksBroad,baseline:baseline,evaluated:evaluated,ms:Date.now()-t0,M:N0};
 }
 
-// ---- 寻优：档位文字 / 套用到选股面板的配置 ----
-const OPT_BIN_LABELS={
-  cost:['陡降(≤-1%)','小幅下降(-1~0%)','小幅上升(0~1%)','陡升(≥1%)'],
-  zqchg:['下降','小幅上升(0~5点)','陡升(≥5点)'],
-  cmp:['变化幅度大于昨日','变化幅度小于昨日'],
-  crossE:['zq 上穿 zq1','zq 下穿 zq1'],
-  pos:['zq 在 zq1 上方','zq 在 zq1 下方'],
-};
-function optAtomLabel(g,b,th){
-  const gg=SEARCH_GROUPS[g], day=gg.day==='t'?'今日':'昨日';
-  if(gg.kind==='zqval'){
-    const t=th[gg.src]; const L=[`<${t[0]}`,`${t[0]}~${t[1]}`,`${t[1]}~${t[2]}`,`≥${t[2]}`];
-    return `${day} ${gg.k} 值 ${L[b]}%`;
-  }
-  const txt=OPT_BIN_LABELS[gg.kind][b];
-  if(gg.kind==='crossE'||gg.kind==='pos') return `${day} ${txt}`;
-  return `${day} ${gg.k} ${txt}`;
-}
-// 把一个组合翻成选股面板的 cfg（和面板里手动设置完全等价，所以回测结果可以直接对上）
-function optComboCfg(gs,bs,th){
-  const cfg={y:{},t:{}};
-  const blank=()=>({st:'',mn:'',mx:'',vmn:'',vmx:'',cmp:''});
-  gs.forEach((g,idx)=>{
-    const gg=SEARCH_GROUPS[g], b=bs[idx], day=gg.day;
-    if(gg.kind==='crossE'){ cfg[day].cross=['up','down'][b]; return; }
-    if(gg.kind==='pos'){ if(!cfg[day].cross) cfg[day].cross=['above','below'][b]; return; }
-    const o=cfg[day][gg.k]||(cfg[day][gg.k]=blank());
-    if(gg.kind==='cost'){
-      const m=[{st:'sdn',mn:'1',mx:''},{st:'down',mn:'',mx:'1'},{st:'up',mn:'',mx:'1'},{st:'sup',mn:'1',mx:''}][b]; Object.assign(o,m);
-    } else if(gg.kind==='zqchg'){
-      const m=[{st:'down',mn:'',mx:''},{st:'up',mn:'',mx:'5'},{st:'sup',mn:'5',mx:''}][b]; Object.assign(o,m);
-    } else if(gg.kind==='zqval'){
-      const t=th[gg.src];
-      const m=[{vmn:'',vmx:String(t[0])},{vmn:String(t[0]),vmx:String(t[1])},{vmn:String(t[1]),vmx:String(t[2])},{vmn:String(t[2]),vmx:''}][b]; Object.assign(o,m);
-    } else if(gg.kind==='cmp'){ o.cmp=['gt','lt'][b]; }
-  });
+const SEARCH_SPACE=buildSearchSpace();
+function optAtomLabel(g,a){ const gg=SEARCH_SPACE[g], at=gg.atoms[a]; return (gg.day==='t'?'今日':'昨日')+(gg.k?' '+gg.k:'')+' '+at.label; }
+// 把一个组合翻成选股面板的 cfg（和面板里手动设置完全等价）
+function optComboCfg(gs,as){
+  const cfg={y:{},t:{}}; const blank=()=>({st:'',mn:'',mx:'',vmn:'',vmx:'',cmp:''});
+  gs.forEach((g,i)=>{ const gg=SEARCH_SPACE[g], p=gg.atoms[as[i]].patch, day=gg.day;
+    if(p.cross){ if(gg.kind==='crossE'||!cfg[day].cross) cfg[day].cross=p.cross; return; }
+    const o=cfg[day][gg.k]||(cfg[day][gg.k]=blank()); Object.assign(o,p); });
   return cfg;
 }
 function optApplyToPanel(cfg){
@@ -1301,7 +1337,6 @@ function optApplyToPanel(cfg){
   refreshPreview();
 }
 
-// ---- 寻优：运行 / 展示 ----
 let optWorker=null;
 function optStop(){ if(optWorker){ optWorker.terminate(); optWorker=null; } document.getElementById('opt-stop').style.display='none'; document.getElementById('opt-run').classList.remove('off'); }
 function optStats(trades,lateStart){
@@ -1309,25 +1344,16 @@ function optStats(trades,lateStart){
   trades.forEach(t=>{ n++; sum+=t.ret; const win=t.ret>0; if(win) w++; if(t.d>=lateStart){ nL++; if(win) wL++; } else { nE++; if(win) wE++; } });
   return {n,w,avg:n?sum/n:0,nE,wE,nL,wL};
 }
-function optRender(res,lateStart){
-  const out=document.getElementById('opt-results'); out.innerHTML='';
-  const D=CAL.length; const th=res.th;
-  const top3=res.top.slice(0,3);
-  const bsl=res.baseline;
-  const head=document.createElement('div'); head.className='card';
-  head.innerHTML=`<div style="font-weight:600;">胜率前三的条件组合</div>
-    <div class="sum-line">已逐个回测 ${res.evaluated.toLocaleString()} 个组合（用时 ${(res.ms/1000).toFixed(1)} 秒）。每次命中当天收盘买，下一个交易日收盘卖，全部 ${D} 个交易日（${CAL[0]} ~ ${CAL[D-1]}）。<br>
-    对照基准：全市场任意一只股票在任意一天买入，次日胜率 <b>${(bsl.win/bsl.n*100).toFixed(1)}%</b>，平均 ${fmtPct(bsl.sum/bsl.n)}（${bsl.n.toLocaleString()} 次）。<br>
-    <span style="color:#e0b23c;">组合很多，总会有几个“碰巧”表现很好；“后1/3时段”的胜率更能说明它稳不稳。</span></div>`;
-  out.appendChild(head);
-  if(!top3.length){ const c=document.createElement('div'); c.className='card'; c.innerHTML='<div class="hint">没有交易数不少于下限的组合，把“最少交易数”调小再试</div>'; out.appendChild(c); return; }
-  const cls=v=>v>0?'up':v<0?'down':'flat';
-  top3.forEach((r,i)=>{
-    const cfg=optComboCfg(r.g,r.b,th);
+function optCards(out,title,note,picks,lateStart){
+  const D=CAL.length, cls=v=>v>0?'up':v<0?'down':'flat';
+  const h=document.createElement('div'); h.className='section-label'; h.style.margin='14px 2px 6px'; h.innerHTML=`<span>${title}</span>`; out.appendChild(h);
+  if(note){ const nt=document.createElement('div'); nt.className='sum-line'; nt.textContent=note; out.appendChild(nt); }
+  if(!picks.length){ const c=document.createElement('div'); c.className='card'; c.innerHTML='<div class="hint">没有满足条件的组合，把“最少交易数”调小再试</div>'; out.appendChild(c); return; }
+  picks.slice(0,3).forEach((r,i)=>{
+    const cfg=optComboCfg(r.g,r.a);
     // 用选股面板同一套逻辑再精确回测一遍，显示的就是你点“回测”会看到的数字
-    const bt=doBacktest(SD,compileSel(cfg),0,D-1);
-    const st=optStats(bt.trades,lateStart);
-    const labels=r.g.map((g,idx)=>optAtomLabel(g,r.b[idx],th));
+    const bt=doBacktest(SD,compileSel(cfg),0,D-1); const st=optStats(bt.trades,lateStart);
+    const labels=r.g.map((g,idx)=>optAtomLabel(g,r.a[idx]));
     const pc=(w,n)=>n?(w/n*100).toFixed(1)+'%':'--';
     const div=document.createElement('div'); div.className='card';
     div.innerHTML=`<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;">
@@ -1337,12 +1363,25 @@ function optRender(res,lateStart){
       <div class="stat-grid"><div class="stat"><div class="k">交易次数</div><div class="v">${st.n}</div></div>
         <div class="stat"><div class="k">平均收益</div><div class="v ${cls(st.avg)}">${fmtPct(st.avg)}</div></div>
         <div class="stat"><div class="k">涉及股票</div><div class="v">${new Set(bt.trades.map(t=>t.s)).size}</div></div></div>
-      <div class="sum-line" style="margin:0 0 8px;">前2/3时段 胜率 ${pc(st.wE,st.nE)}（${st.nE}次） · 后1/3时段 胜率 ${pc(st.wL,st.nL)}（${st.nL}次）</div>
+      <div class="sum-line" style="margin:0 0 4px;">前2/3时段 胜率 ${pc(st.wE,st.nE)}（${st.nE}次） · 后1/3时段 胜率 ${pc(st.wL,st.nL)}（${st.nL}次）</div>
+      <div class="sum-line" style="margin:0 0 8px;">命中分布在 ${r.days} 个交易日，最集中的一天占 ${(r.maxShare*100).toFixed(0)}%；另有 ${r.variants} 个只是参数略有不同的同类组合（胜率 ${(r.vMin*100).toFixed(1)}%~${(r.rate*100).toFixed(1)}%）</div>
       <div style="display:flex;gap:8px;"><div class="btn opt-apply">套用到选股面板</div><div class="btn ghost opt-bt">套用并看回测详情</div></div>`;
     div.querySelector('.opt-apply').onclick=()=>{ optApplyToPanel(cfg); document.getElementById('sel-card').scrollIntoView({behavior:'smooth'}); };
     div.querySelector('.opt-bt').onclick=()=>{ optApplyToPanel(cfg); runBacktest(); document.getElementById('backtest-results').scrollIntoView({behavior:'smooth'}); };
     out.appendChild(div);
   });
+}
+function optRender(res,lateStart,minDays,maxShare){
+  const out=document.getElementById('opt-results'); out.innerHTML='';
+  const D=CAL.length, bsl=res.baseline;
+  const head=document.createElement('div'); head.className='card';
+  head.innerHTML=`<div style="font-weight:600;">寻优结果</div>
+    <div class="sum-line">已逐个回测 ${res.evaluated.toLocaleString()} 个组合（用时 ${(res.ms/1000).toFixed(0)} 秒）。命中当天收盘买，下一个交易日收盘卖，全部 ${D} 个交易日（${CAL[0]} ~ ${CAL[D-1]}）。<br>
+    对照基准：全市场任意一只股票在任意一天买入，次日胜率 <b>${(bsl.win/bsl.n*100).toFixed(1)}%</b>，平均 ${fmtPct(bsl.sum/bsl.n)}（${bsl.n.toLocaleString()} 次）；后1/3时段基准胜率 ${(bsl.winL/bsl.nL*100).toFixed(1)}%。<br>
+    <span style="color:#e0b23c;">组合有上百万个，总会有一些碰巧表现好。“后1/3时段”和“命中分布”能帮你判断它稳不稳；差别很大的话，更可能是巧合或只赶上了某段行情。</span></div>`;
+  out.appendChild(head);
+  optCards(out,'① 纯胜率排名前三','只按胜率排序（样本重叠超过一半的算同类，只留胜率最高的）。',res.picks,lateStart);
+  optCards(out,'② 命中分散的前三（更稳）',`在①的基础上，要求命中分布在不少于 ${minDays} 个交易日、且单日最多占 ${(maxShare*100).toFixed(0)}%。`,res.picksBroad,lateStart);
 }
 function optRun(){
   const prog=document.getElementById('opt-progress');
@@ -1350,7 +1389,7 @@ function optRun(){
   if(optWorker) return;
   const maxDepth=parseInt(document.getElementById('opt-depth').value,10)||3;
   const minN=Math.max(30,parseInt(document.getElementById('opt-min').value,10)||300);
-  const D=SD.D, lateStart=D-Math.round(D/3);
+  const D=SD.D, lateStart=D-Math.round(D/3), minDays=20, maxShare=0.2;
   document.getElementById('opt-results').innerHTML='';
   document.getElementById('opt-run').classList.add('off'); document.getElementById('opt-stop').style.display='';
   prog.textContent='准备样本…';
@@ -1362,12 +1401,12 @@ function optRun(){
     if(m.type==='progress'){
       prog.textContent=m.stage==='built'?`样本 ${m.M.toLocaleString()} 个已就绪，开始枚举组合…`:`已评估 ${m.evaluated.toLocaleString()} 个组合，用时 ${(m.ms/1000).toFixed(0)} 秒…`;
     } else if(m.type==='done'){
-      optStop(); prog.textContent=`完成：评估 ${m.res.evaluated.toLocaleString()} 个组合` + (SD.partial?`（⚠ 仅含已载入的 ${SD.n} 只）`:'');
-      optRender(m.res,lateStart);
+      optStop(); prog.textContent=`完成：评估 ${m.res.evaluated.toLocaleString()} 个组合`+(SD.partial?`（⚠ 仅含已载入的 ${SD.n} 只）`:'');
+      optRender(m.res,lateStart,minDays,maxShare);
     }
   };
   optWorker.onerror=ev=>{ prog.textContent='计算出错：'+(ev.message||''); optStop(); };
-  optWorker.postMessage({F:SD.F,n:SD.n,D:SD.D,G:SEARCH_GROUPS,maxDepth:maxDepth,minN:minN,topK:20,lateStart:lateStart});
+  optWorker.postMessage({F:SD.F,n:SD.n,D:SD.D,G:SEARCH_SPACE,maxDepth:maxDepth,minN:minN,topK:800,keep:3,scanTo:300,minDays:minDays,maxShare:maxShare,lateStart:lateStart});
 }
 document.getElementById('export-btn').onclick=()=>{
   const prog=document.getElementById('opt-progress'), m=SCREEN_META;
@@ -1380,6 +1419,23 @@ document.getElementById('export-btn').onclick=()=>{
 document.getElementById('opt-run').onclick=optRun;
 document.getElementById('opt-stop').onclick=()=>{ optStop(); document.getElementById('opt-progress').textContent='已停止'; };
 
+// ---- 研究数据（3年）下载列表 ----
+async function loadResearchMeta(){
+  const st=document.getElementById('rs-state'), list=document.getElementById('rs-list');
+  try{
+    const r=await fetch('./data/research/meta.json?t='+Date.now(),{cache:'no-store'});
+    if(!r.ok) throw new Error('http '+r.status);
+    const m=await r.json();
+    const files=m.files||[]; const mb=files.reduce((a,f)=>a+f.bytes,0)/1048576;
+    st.textContent=(m.complete?'已完成':'未完成 ')+`${m.done}/${m.total} 片 · ${m.cal_first} ~ ${m.cal_last} · ${mb.toFixed(1)}MB`;
+    if(!m.complete) st.style.color='var(--up)';
+    list.innerHTML='';
+    files.forEach(f=>{ const a=document.createElement('a'); a.className='btn ghost'; a.style.cssText='text-align:left;text-decoration:none;display:block;'; a.href='./data/research/'+f.f; a.setAttribute('download',f.f);
+      a.textContent=`${f.f}　${f.n} 只 · ${(f.bytes/1048576).toFixed(1)}MB`; list.appendChild(a); });
+    if(!files.length) list.innerHTML='<div class="hint">还没有完成的分片</div>';
+  }catch(e){ st.textContent='尚未生成'; list.innerHTML='<div class="hint">在 GitHub 的 Actions 里运行 research-data 后，这里会出现下载文件</div>'; }
+}
+
 // ============ 启动 ============
 (async()=>{
   await loadScreenMeta();
@@ -1389,6 +1445,7 @@ document.getElementById('opt-stop').onclick=()=>{ optStop(); document.getElement
   renderIndexList();
   renderWatchlist();
   loadScreenData();
+  loadResearchMeta();
 })();
 </script>
 </body>
