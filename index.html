@@ -1427,6 +1427,10 @@ async function loadResearchMeta(){
     if(!r.ok) throw new Error('http '+r.status);
     const m=await r.json();
     const files=m.files||[]; const mb=files.reduce((a,f)=>a+f.bytes,0)/1048576;
+    if(m.fmt===2&&!m.complete){
+      st.textContent=`进行中 已完成 ${m.covered}/${m.target} 只`; st.style.color='var(--up)';
+      list.innerHTML='<div class="hint">还没做完。到 Actions 里再运行一次 research-data 会接着做，全部完成后这里才会出现下载文件</div>'; return;
+    }
     st.textContent=(m.complete?'已完成':'未完成 ')+`${m.done}/${m.total} 片 · ${m.cal_first} ~ ${m.cal_last} · ${mb.toFixed(1)}MB`;
     if(!m.complete) st.style.color='var(--up)';
     list.innerHTML='';
