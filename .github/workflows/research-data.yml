@@ -1,7 +1,8 @@
 name: research-data
 
-# 手动运行：生成约3年的研究数据（开/高/低/收/成交量/换手率 + cost/zq），放进网页的 data/research/ 供下载。
-# 和每日更新(update-data)互不影响；可能需要 3~6 小时。每做完 100 只就保存一次，没做完也没关系：再运行一次会接着做。
+# 手动运行：生成约3年的研究数据（开/高/低/收/成交量/换手率/均价 + cost50/75/90 + zq/zq1 + HLB50/75/90），放进网页的 data/research/ 供下载。
+# v3：已修正 zq 的复权错位；每做完 500 只保存一批，可断点续抓。
+# 和每日更新(update-data)互不影响；可能需要 3~6 小时。每做完 500 只保存一批，没做完也没关系：再运行一次会接着做。
 on:
   workflow_dispatch:
     inputs:
@@ -35,7 +36,7 @@ jobs:
         with:
           python-version: '3.11'
       - name: Install deps
-        run: pip install baostock
+        run: pip install baostock numpy
 
       - name: Load previous data (gh-pages)
         run: bash code/scripts/site.sh prepare
@@ -43,7 +44,7 @@ jobs:
       - name: Fetch 3-year research data (baostock)
         timeout-minutes: 335
         working-directory: site
-        run: python ../code/scripts/fetch-research.py --rebuild "${{ github.event.inputs.rebuild || 'false' }}" --max-minutes 300
+        run: python ../code/scripts/fetch-research.py --rebuild "${{ github.event.inputs.rebuild || 'false' }}" --unit 500 --max-minutes 300
 
       - name: Publish (single commit, history never grows)
         if: always()
