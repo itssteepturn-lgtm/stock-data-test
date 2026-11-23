@@ -192,6 +192,8 @@ def fetch_bars(code, days):
     rs = bs.query_history_k_data_plus(bs_code(code),
         "date,open,high,low,close,volume,amount,turn",
         start_date=start, end_date=end, frequency="d", adjustflag="2")
+    if getattr(rs, "error_code", "0") not in ("0", 0, None, ""):
+        raise RuntimeError(f"{code} baostock {rs.error_code} {getattr(rs, 'error_msg', '')}")
     bars=[]
     while (rs.error_code=='0') & rs.next():
         r = rs.get_row_data()
@@ -239,21 +241,29 @@ def call_with_timeout(fn, timeout, *a):
         ex.shutdown(wait=False)
 
 def fetch_bars_with_timeout(code, days, timeout=None):
+    """返回 (bars, status)。status: ok / empty / error。
+
+    服务器正常答复但没有 K 线时不重试。2026-11-05 和 2026-11-06 的日志里，
+    这类空答复每次运行正好 238 条，等于 119 个没有文件的代码各重试 2 次。
+    超时和异常仍最多试 3 次。
+    """
     timeout = timeout or FETCH_TIMEOUT
     for attempt in range(3):
         try:
             bars = call_with_timeout(fetch_bars, timeout, code, days)
             if bars:
-                return bars
-            if attempt < 2:
-                print(f"{code} fetch empty attempt {attempt+1} retry {days}天")
-                continue
-            return []
+                return bars, "ok"
+            print(f"{code} fetch empty 不重试 {days}天")
+            return [], "empty"
         except FutureTimeoutError:
             print(f"{code} fetch timeout {timeout}s attempt {attempt+1}")
         except Exception as e:
             print(f"{code} fetch err {e} attempt {attempt+1}")
-    return []
+    return [], "error"
+
+def beijing_now_iso():
+    """断点日期用北京时间。运行器本地的 datetime.now() 在 UTC 晚上会落到前一个日历日。"""
+    return (datetime.datetime.utcnow() + timedelta(hours=8)).replace(microsecond=0).isoformat()
 
 def fetch_index_bars(bs_code_str, days):
     end = get_bj_today().strftime("%Y-%m-%d")
@@ -353,21 +363,25 @@ def main():
         return 1
 
     checkpoint = set()
+    empty_today = set()
     if resume_flag and not rebuild and CHECKPOINT_FILE.exists():
         try:
             raw = json.loads(CHECKPOINT_FILE.read_text())
             checkpoint = set(raw.get('done', []))
+            empty_today = set(raw.get('empty', []))
             upd_date = raw.get('updated', '')[:10]
             today_str = get_bj_today().isoformat()
             if upd_date != today_str:
                 print(f"checkpoint 是 {upd_date} 的，不是今天 {today_str}，清空")
                 checkpoint = set()
+                empty_today = set()
                 CHECKPOINT_FILE.unlink(missing_ok=True)
             else:
-                print(f"checkpoint loaded {len(checkpoint)} done from today {upd_date}")
+                print(f"checkpoint loaded {len(checkpoint)} done {len(empty_today)} empty from today {upd_date}")
         except Exception as e:
             print(f"checkpoint 读取失败 {e}，忽略")
             checkpoint = set()
+            empty_today = set()
 
     latest_day = get_latest_trading_day()
     print(f"latest trading day {latest_day}")
@@ -419,7 +433,11 @@ def main():
     budget_hit = False
 
     def flush(final=False):
-        atomic_write(CHECKPOINT_FILE, dumps({"done": sorted(checkpoint), "updated": datetime.datetime.now().isoformat()}))
+        atomic_write(CHECKPOINT_FILE, dumps({
+            "done": sorted(checkpoint),
+            "empty": sorted(empty_today),
+            "updated": beijing_now_iso(),
+        }))
         existing_count = len(list(DATA_DIR.glob("*.json")))
         atomic_write(META_FILE, dumps({
             "lastUpdateDate": latest_day,
@@ -491,20 +509,25 @@ def main():
             # 必须和已有数据重叠，才能验证复权基准没变
             need_days = max(need_days, overlap_days(existing))
         else:
+            if code in empty_today:
+                failed.append(code)
+                continue
             need_days = DEEP_SEED_DAYS
 
-        new_bars = fetch_bars_with_timeout(code, need_days)
+        new_bars, status = fetch_bars_with_timeout(code, need_days)
         if not new_bars:
             if existing:
                 skipped_up_to_date += 1
                 continue
             else:
                 failed.append(code)
+                if status == "empty":
+                    empty_today.add(code)
                 continue
 
         if existing and history_changed(existing, new_bars):
             days = max(DEEP_SEED_DAYS, span_days(existing))
-            full = fetch_bars_with_timeout(code, days)
+            full, _status = fetch_bars_with_timeout(code, days)
             if full:
                 print(f"{code} 复权基准变化(除权)，整只重抓 {days}天 {len(existing)}根 -> {len(full)}根")
                 reseeded.append(code)
