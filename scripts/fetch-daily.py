@@ -56,16 +56,24 @@ class ChipModel:
         for j, i in enumerate(range(i0, i1+1)):
             self.w[i] += turnover * raw[j] / s
     def percentile(self, pct: float):
+        """COST(P)：筹码累计达到 P% 的价格。
+        在跨越目标的那一档内按权重线性插值（档位左右边界之间），避免只取档心导致
+        成本线长时间贴住同一档心再整档跳变（长窗口下 step 较大时呈锯齿）。
+        语义仍是「累计 P% 处的价格」，不改 WINNER / 换手衰减 / 三角铺筹。"""
         total = sum(self.w)
         if total <= 0:
             return None
         target = total * pct / 100.0
         acc = 0.0
         for i in range(self.n):
+            prev = acc
             acc += self.w[i]
             if acc >= target:
-                return self.price_at(i)
-        return self.price_at(self.n-1)
+                if self.w[i] <= 0:
+                    return self.price_at(i)
+                frac = (target - prev) / self.w[i]
+                return self.min + i * self.step + frac * self.step
+        return self.max
     def winner_below(self, price: float):
         total = sum(self.w)
         if total <= 0:

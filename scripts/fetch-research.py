@@ -147,7 +147,15 @@ def chip_series(O, H, L, C, V, T, avg, nb=300):
         if tot <= 0:
             continue
         for pc, kc, kh in ((50, "c50", "hlb50"), (75, "c75", "hlb75"), (90, "c90", "hlb90")):
-            j = min(nb - 1, int(np.searchsorted(cs, tot * pc / 100.0))); price = pr[j]; out[kc][i] = price
+            # COST(P)：在跨越目标的那一档内线性插值（与 fetch-daily ChipModel.percentile 同源），
+            # 避免长窗口大 step 时成本线贴档心再整档跳变；WINNER(zq/zq1/hlb) 仍用档位累加，不改语义。
+            target = tot * pc / 100.0
+            j = min(nb - 1, int(np.searchsorted(cs, target)))
+            prev_cs = float(cs[j - 1]) if j > 0 else 0.0
+            w_j = float(cs[j] - prev_cs)
+            frac = ((target - prev_cs) / w_j) if w_j > 0 else 0.5
+            price = mn + j * step + frac * step
+            out[kc][i] = price
             if prev[pc] is not None:
                 out[kh][i] = cs[ix(prev[pc])] / tot * 100          # HLB = WINNER(REF(COST(P),1))*100
             prev[pc] = price
