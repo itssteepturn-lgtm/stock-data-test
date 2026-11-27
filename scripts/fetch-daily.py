@@ -75,6 +75,7 @@ class ChipModel:
         return acc/total*100.0
 
 def compute_indicator_series(bars: List[Dict]):
+    """筹码/zq 算法本体：不要改。均价口径由调用方通过 amount 预处理保证（见 bars_for_chip_avg）。"""
     if not bars:
         return {}, None
     lows = [b['low'] for b in bars]
@@ -103,6 +104,129 @@ def compute_indicator_series(bars: List[Dict]):
         zq1.append(model.winner_below(vwma))
         zq.append(model.winner_below(avg))
     return {'cost50': cost50,'cost75': cost75,'cost90': cost90,'zq1': zq1,'zq': zq,'vwma10': vwma10}, model
+
+
+# ============ zq 复权错位修正（与 fetch-research.py v3 同口径）============
+# 成交额/成交量得到的均价是【不复权】真实价；OHLC 是【前复权】。送转后历史上均价会高过复权最高价，zq 读满。
+# 做法：另抓不复权收盘，f=前复权收盘/不复权收盘，5日中位数平滑，|f-1|<0.003 吸成 1；
+# 把 amount *= f 后再进 compute_indicator_series，使 avg=amount/(vol*100) 与复权价同口径。
+# 不改 ChipModel / compute_indicator_series；落盘仍保留原始 amount。
+
+def _median(xs):
+    ys = sorted(xs)
+    m = len(ys)
+    if m == 0:
+        return float('nan')
+    if m % 2:
+        return ys[m // 2]
+    return 0.5 * (ys[m // 2 - 1] + ys[m // 2])
+
+def adj_factors_for_bars(bars, raw_close):
+    """返回与 bars 等长的前复权因子；不复权数据不足则返回 None（调用方改用典型价代理）。"""
+    n = len(bars)
+    if not raw_close or n == 0:
+        return None
+    ratio = [None] * n
+    finite = 0
+    for i, b in enumerate(bars):
+        rc = raw_close.get(b['date'])
+        c = b.get('close')
+        if rc and rc > 0 and c is not None and math.isfinite(c):
+            ratio[i] = c / rc
+            finite += 1
+    if finite / n < 0.8:
+        return None
+    idx = [i for i, r in enumerate(ratio) if r is not None]
+    vals = [ratio[i] for i in idx]
+    filled = [float('nan')] * n
+    for i in range(n):
+        if ratio[i] is not None:
+            filled[i] = ratio[i]
+            continue
+        # 线性插值缺口（两端外推用最近有效值）
+        if i < idx[0]:
+            filled[i] = vals[0]
+        elif i > idx[-1]:
+            filled[i] = vals[-1]
+        else:
+            j = 0
+            while j + 1 < len(idx) and idx[j + 1] < i:
+                j += 1
+            i0, i1 = idx[j], idx[j + 1]
+            t = (i - i0) / (i1 - i0) if i1 != i0 else 0.0
+            filled[i] = vals[j] * (1 - t) + vals[j + 1] * t
+    sm = [0.0] * n
+    for i in range(n):
+        window = filled[max(0, i - 2):min(n, i + 3)]
+        sm[i] = _median(window)
+        if abs(sm[i] - 1.0) < 0.003:
+            sm[i] = 1.0
+    return sm
+
+def bars_for_chip_avg(bars, raw_close):
+    """生成仅用于筹码/zq 计算的 bars 副本：amount 乘复权因子（或典型价代理）。原 bars 不动。"""
+    factors = adj_factors_for_bars(bars, raw_close)
+    out = []
+    used_raw = factors is not None
+    for i, b in enumerate(bars):
+        bb = dict(b)
+        vol = bb.get('vol', 0) or 0
+        amt = bb.get('amount', 0) or 0
+        if used_raw:
+            f = factors[i]
+            if vol > 0 and amt > 0 and f is not None and math.isfinite(f):
+                bb['amount'] = amt * f
+            else:
+                typ = (b['open'] + b['high'] + b['low'] + b['close']) / 4.0
+                bb['amount'] = typ * vol * 100.0 if vol > 0 else amt
+        else:
+            typ = (b['open'] + b['high'] + b['low'] + b['close']) / 4.0
+            bb['amount'] = typ * vol * 100.0 if vol > 0 else amt
+        out.append(bb)
+    return out, used_raw
+
+def fetch_raw_close(code, days):
+    end = get_bj_today().strftime("%Y-%m-%d")
+    start = (get_bj_today() - timedelta(days=days)).strftime("%Y-%m-%d")
+    rs = bs.query_history_k_data_plus(bs_code(code), "date,close",
+        start_date=start, end_date=end, frequency="d", adjustflag="3")
+    out = {}
+    while (rs.error_code == '0') & rs.next():
+        r = rs.get_row_data()
+        try:
+            out[r[0]] = float(r[1])
+        except Exception:
+            pass
+    return out
+
+def fetch_raw_close_with_timeout(code, days, timeout=None):
+    timeout = timeout or FETCH_TIMEOUT
+    for attempt in range(2):
+        try:
+            d = call_with_timeout(fetch_raw_close, timeout, code, days)
+            if d:
+                return d
+        except FutureTimeoutError:
+            print(f"{code} raw timeout {timeout}s attempt {attempt+1}")
+        except Exception as e:
+            print(f"{code} raw err {e} attempt {attempt+1}")
+        time.sleep(2 * (attempt + 1))
+    return {}
+
+def index_has_date(day_str, timeout=20):
+    """探测 baostock 是否已有指定日的上证指数K（用来判断今日行情是否出炉）。"""
+    def f():
+        rs = bs.query_history_k_data_plus("sh.000001", "date,close",
+            start_date=day_str, end_date=day_str, frequency="d")
+        while (rs.error_code == '0') & rs.next():
+            if rs.get_row_data()[0] == day_str:
+                return True
+        return False
+    try:
+        return bool(call_with_timeout(f, timeout))
+    except Exception as e:
+        print(f"index_has_date {day_str} err {e}")
+        return False
 
 DATA_DIR = pathlib.Path("data/stocks")
 DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -336,12 +460,15 @@ def main():
     parser.add_argument('--rebuild', type=str, default='false', help='true=忽略已有数据，全部整只重抓（原子替换，不会先删）')
     parser.add_argument('--max-minutes', type=float, default=315, help='超过这个时长就体面收尾，下次运行接着补')
     parser.add_argument('--flush-every', type=int, default=500, help='每处理多少只写一次断点和meta')
+    parser.add_argument('--require-today', type=str, default='false',
+                        help='true=若北京时间工作日且 baostock 尚无今日上证K，则立即退出等下次定时（收盘后尽快出数用）')
     args = parser.parse_args()
     resume_flag = args.resume.lower() not in ('false', '0', 'no')
     rebuild = args.rebuild.lower() in ('true', '1', 'yes')
+    require_today = args.require_today.lower() in ('true', '1', 'yes')
     flush_every = args.flush_every if args.flush_every > 0 else 500
     t_start = time.time()
-    print(f"resume={resume_flag} rebuild={rebuild} max_minutes={args.max_minutes}")
+    print(f"resume={resume_flag} rebuild={rebuild} require_today={require_today} max_minutes={args.max_minutes}")
 
     if (rebuild or not resume_flag) and CHECKPOINT_FILE.exists():
         CHECKPOINT_FILE.unlink()
@@ -352,13 +479,25 @@ def main():
         print("baostock login fail", lg.error_msg)
         return 1
 
+    bj_today = get_bj_today().isoformat()
+    # 收盘后密集定时：今日K未出炉则体面退出，把名额留给下一轮 cron（避免空跑占 concurrency）
+    if require_today and get_bj_today().weekday() < 5:
+        if not index_has_date(bj_today):
+            print(f"今日K尚未就绪（上证无 {bj_today}），退出等下次定时")
+            try:
+                bs.logout()
+            except Exception:
+                pass
+            return 0
+        print(f"今日K已就绪 {bj_today}")
+
     checkpoint = set()
     if resume_flag and not rebuild and CHECKPOINT_FILE.exists():
         try:
             raw = json.loads(CHECKPOINT_FILE.read_text())
             checkpoint = set(raw.get('done', []))
             upd_date = raw.get('updated', '')[:10]
-            today_str = get_bj_today().isoformat()
+            today_str = bj_today
             if upd_date != today_str:
                 print(f"checkpoint 是 {upd_date} 的，不是今天 {today_str}，清空")
                 checkpoint = set()
@@ -371,6 +510,17 @@ def main():
 
     latest_day = get_latest_trading_day()
     print(f"latest trading day {latest_day}")
+
+    # 一次性治愈：旧数据 zq 未经复权因子修正；meta 无 zqAdjV3 时对「已是最新」的股票也重算指标
+    prev_meta = {}
+    if META_FILE.exists():
+        try:
+            prev_meta = json.loads(META_FILE.read_text())
+        except Exception:
+            prev_meta = {}
+    need_zq_fix = rebuild or prev_meta.get('zqAdjV3') is not True
+    if need_zq_fix:
+        print("zqAdjV3 未标记：本轮会对已有股票用前复权因子重算 zq/cost（不改算法，只修正均价口径）")
 
     all_codes = get_all_a_codes()
     print(f"全市场 {len(all_codes)} 只，已完成 {len(checkpoint)} 只")
@@ -416,9 +566,28 @@ def main():
     skipped_up_to_date = 0
     deep_repair = 0
     reseeded = []          # 因除权/复权基准变化而整只重抓的股票
+    zq_recomputed = 0      # 仅重算指标（zq 复权治愈）的股票数
+    proxy_codes = []       # 不复权收盘抓失败、改用典型价作均价
     budget_hit = False
 
+    def enrich_and_write(code, path, merged, raw_days):
+        nonlocal proxy_codes
+        raw = fetch_raw_close_with_timeout(code, raw_days)
+        ind_bars, used_raw = bars_for_chip_avg(merged, raw)
+        if not used_raw:
+            proxy_codes.append(code)
+        indicators, _ = compute_indicator_series(ind_bars)
+        enriched = []
+        for i, b in enumerate(merged):
+            # 落盘保留原始 amount；指标来自因子修正后的均价口径
+            enriched.append({**b, "cost50": indicators['cost50'][i], "cost75": indicators['cost75'][i], "cost90": indicators['cost90'][i], "zq1": indicators['zq1'][i], "zq": indicators['zq'][i], "vwma10": indicators['vwma10'][i]})
+        out = {"code": code, "bars": enriched, "latest": enriched[-1] if enriched else None, "updated": datetime.datetime.now().isoformat(), "zqAdjV3": True}
+        atomic_write(path, dumps(out))
+        return True
+
     def flush(final=False):
+        # 全市场跑完且无预算打断时才盖章 zqAdjV3，下次日常增量可跳过已治愈股票
+        mark_v3 = (not budget_hit) and (len(checkpoint) >= max(100, int(len(all_codes) * 0.95)))
         atomic_write(CHECKPOINT_FILE, dumps({"done": sorted(checkpoint), "updated": datetime.datetime.now().isoformat()}))
         existing_count = len(list(DATA_DIR.glob("*.json")))
         atomic_write(META_FILE, dumps({
@@ -431,9 +600,13 @@ def main():
             "deepRepair": deep_repair,
             "reseeded": len(reseeded),
             "reseededCodes": reseeded[:200],
+            "zqRecomputed": zq_recomputed,
+            "zqAdjV3": True if mark_v3 else bool(prev_meta.get('zqAdjV3')),
+            "proxy": len(proxy_codes),
+            "proxyCodes": proxy_codes[:200],
             "budgetHit": budget_hit,
             "ranAt": datetime.datetime.now().isoformat(),
-            "note": f"已存{existing_count}/{len(all_codes)} 本次更新{done_this_run} 跳过{skipped_up_to_date} 深补{deep_repair} 除权重抓{len(reseeded)} 失败{len(failed)}只",
+            "note": f"已存{existing_count}/{len(all_codes)} 本次更新{done_this_run} 跳过{skipped_up_to_date} 深补{deep_repair} 除权重抓{len(reseeded)} zq重算{zq_recomputed} 失败{len(failed)}只",
             "done": len(checkpoint),
             "resume": resume_flag,
             "failed": failed[:100]
@@ -448,16 +621,20 @@ def main():
 
         path = DATA_DIR / f"{code}.json"
         existing = []
+        stock_obj = None
         if path.exists() and not rebuild:
             try:
-                j = json.loads(path.read_text())
-                if isinstance(j, dict) and 'bars' in j:
-                    existing = j['bars']
-                elif isinstance(j, list):
-                    existing = j
+                stock_obj = json.loads(path.read_text())
+                if isinstance(stock_obj, dict) and 'bars' in stock_obj:
+                    existing = stock_obj['bars']
+                elif isinstance(stock_obj, list):
+                    existing = stock_obj
             except Exception:
                 existing = []
+                stock_obj = None
 
+        recompute_only = False
+        need_days = DEEP_SEED_DAYS
         if existing:
             existing_dates = set(b['date'] for b in existing)
             last_date = existing[-1]['date']
@@ -471,8 +648,13 @@ def main():
 
             if last_date >= latest_day:
                 if not missing_30 and len(existing) >= 90:
-                    skipped_up_to_date += 1
-                    continue
+                    already_v3 = isinstance(stock_obj, dict) and stock_obj.get('zqAdjV3')
+                    if need_zq_fix and not already_v3:
+                        # OHLC 已是最新：只抓不复权收盘并重算指标，治愈旧 zq
+                        recompute_only = True
+                    else:
+                        skipped_up_to_date += 1
+                        continue
                 elif missing_30:
                     print(f"{code} 发现近30天缺口 {missing_30} 需补")
                     need_days = max(GAP_CHECK_DAYS, TOPUP_DAYS + len(missing_30) + 5)
@@ -489,9 +671,27 @@ def main():
                 else:
                     need_days = TOPUP_DAYS
             # 必须和已有数据重叠，才能验证复权基准没变
-            need_days = max(need_days, overlap_days(existing))
+            if not recompute_only:
+                need_days = max(need_days, overlap_days(existing))
         else:
             need_days = DEEP_SEED_DAYS
+
+        if recompute_only:
+            merged = existing[-MAX_DAYS_KEPT:]
+            try:
+                enrich_and_write(code, path, merged, max(DEEP_SEED_DAYS, span_days(merged)))
+            except Exception as e:
+                print(f"{code} zq recompute fail {e}")
+                failed.append(code)
+                continue
+            checkpoint.add(code)
+            done_this_run += 1
+            zq_recomputed += 1
+            if (idx + 1) % 100 == 0:
+                print(f"progress {idx+1}/{len(all_codes)} done_this_run {done_this_run} zq_recomputed {zq_recomputed} skip {skipped_up_to_date} failed {len(failed)}")
+            if done_this_run % flush_every == 0:
+                flush()
+            continue
 
         new_bars = fetch_bars_with_timeout(code, need_days)
         if not new_bars:
@@ -523,27 +723,17 @@ def main():
             checkpoint.add(code)
             continue
         try:
-            indicators, _ = compute_indicator_series(merged)
+            enrich_and_write(code, path, merged, max(need_days, span_days(merged), DEEP_SEED_DAYS))
         except Exception as e:
             print(f"{code} compute fail skip {e}")
             failed.append(code)
-            continue
-
-        enriched = []
-        for i, b in enumerate(merged):
-            enriched.append({**b, "cost50": indicators['cost50'][i], "cost75": indicators['cost75'][i], "cost90": indicators['cost90'][i], "zq1": indicators['zq1'][i], "zq": indicators['zq'][i], "vwma10": indicators['vwma10'][i]})
-        out = {"code": code, "bars": enriched, "latest": enriched[-1] if enriched else None, "updated": datetime.datetime.now().isoformat()}
-        try:
-            atomic_write(path, dumps(out))
-        except Exception as e:
-            print(f"{code} write fail {e}")
             continue
 
         checkpoint.add(code)
         done_this_run += 1
 
         if (idx + 1) % 100 == 0:
-            print(f"progress {idx+1}/{len(all_codes)} done_this_run {done_this_run} skip {skipped_up_to_date} reseeded {len(reseeded)} failed {len(failed)}")
+            print(f"progress {idx+1}/{len(all_codes)} done_this_run {done_this_run} skip {skipped_up_to_date} reseeded {len(reseeded)} zq_recomputed {zq_recomputed} failed {len(failed)}")
         if done_this_run % flush_every == 0:
             flush()
 
@@ -552,7 +742,7 @@ def main():
         bs.logout()
     except Exception:
         pass
-    print(f"run finished this run {done_this_run} skip {skipped_up_to_date} deep_repair {deep_repair} reseeded {len(reseeded)} failed {len(failed)} existing {existing_count}/{len(all_codes)} budgetHit={budget_hit}")
+    print(f"run finished this run {done_this_run} skip {skipped_up_to_date} deep_repair {deep_repair} reseeded {len(reseeded)} zq_recomputed {zq_recomputed} failed {len(failed)} existing {existing_count}/{len(all_codes)} budgetHit={budget_hit}")
     return 0
 
 if __name__ == "__main__":

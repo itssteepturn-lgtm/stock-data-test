@@ -1,11 +1,26 @@
 name: update-data
 
-# 全自动：每个工作日北京时间 18:30 抓一次，21:30 再补跑一次（baostock 偶尔晚更新）。
-# 休市日、或第二次补跑时数据已是最新，会自动发现「没有变化」而不发布。
+# 收盘后尽快出数（北京时间，A股 15:00 收盘；baostock 通常 16:00 前后陆续有今日K）：
+#
+# 密集窗口（今日K一出即可被下一轮捡到；未就绪则探测步秒退，不拉 gh-pages、不占长任务）：
+#   16:10 / 16:40 / 17:10 / 17:40 / 18:20
+# 晚间兜底（baostock 偶发延迟、或 GitHub Actions cron 漂移漏跑）：
+#   19:30 / 21:00
+#
+# 说明：
+# - GitHub hosted cron 常延迟十几～几十分钟，故用多点触发，而不是押在单一 18:30。
+# - 并发组 site-publish：未就绪的轮次很快结束；有今日K的一轮才真正抓数。
+# - 数据已含今日且无变化时，site.sh publish 会跳过，不重复发版。
+# - 手动 workflow_dispatch 不要求今日K（可 rebuild / 补跑）。
 on:
   schedule:
-    - cron: '30 10 * * 1-5'
-    - cron: '30 13 * * 1-5'
+    - cron: '10 8 * * 1-5'    # 北京 16:10
+    - cron: '40 8 * * 1-5'    # 北京 16:40
+    - cron: '10 9 * * 1-5'    # 北京 17:10
+    - cron: '40 9 * * 1-5'    # 北京 17:40
+    - cron: '20 10 * * 1-5'   # 北京 18:20
+    - cron: '30 11 * * 1-5'   # 北京 19:30
+    - cron: '0 13 * * 1-5'    # 北京 21:00
   workflow_dispatch:
     inputs:
       mode:
@@ -40,7 +55,46 @@ jobs:
       - name: Install deps
         run: pip install baostock
 
+      # 定时任务：先探测上证是否已有北京时间今日K；没有则整 job 结束，把名额留给下一轮 cron
+      - name: Probe today's bar (schedule only)
+        id: probe
+        if: github.event_name == 'schedule'
+        working-directory: code
+        run: |
+          python - <<'PY'
+          import datetime, sys
+          import baostock as bs
+          bj = (datetime.datetime.utcnow() + datetime.timedelta(hours=8)).date()
+          if bj.weekday() >= 5:
+              print(f"周末 {bj}，跳过探测，继续跑（可补缺口）")
+              open(sys.environ['GITHUB_OUTPUT'], 'a').write('ready=true\n')
+              sys.exit(0)
+          day = bj.isoformat()
+          lg = bs.login()
+          if lg.error_code != '0':
+              print('login fail, 放行让主流程重试')
+              open(sys.environ['GITHUB_OUTPUT'], 'a').write('ready=true\n')
+              sys.exit(0)
+          ready = False
+          try:
+              rs = bs.query_history_k_data_plus('sh.000001', 'date,close',
+                  start_date=day, end_date=day, frequency='d')
+              while rs.error_code == '0' and rs.next():
+                  if rs.get_row_data()[0] == day:
+                      ready = True
+                      break
+          finally:
+              try: bs.logout()
+              except Exception: pass
+          print(f"probe {day} ready={ready}")
+          open(sys.environ['GITHUB_OUTPUT'], 'a').write(('ready=true\n' if ready else 'ready=false\n'))
+          if not ready:
+              print(f'今日K尚未就绪（上证无 {day}），本轮结束，等下次定时')
+              sys.exit(0)
+          PY
+
       - name: Keepalive (防止 60 天无活动后定时任务被 GitHub 自动停用)
+        if: github.event_name != 'schedule' || steps.probe.outputs.ready == 'true'
         run: |
           cd code
           last=$(git log -1 --format=%ct)
@@ -53,23 +107,28 @@ jobs:
           fi
 
       - name: Load previous data (gh-pages)
+        if: github.event_name != 'schedule' || steps.probe.outputs.ready == 'true'
         run: bash code/scripts/site.sh prepare
 
       - name: Fetch daily bars (baostock)
+        if: github.event_name != 'schedule' || steps.probe.outputs.ready == 'true'
         timeout-minutes: 335
         working-directory: site
         run: |
           MODE="${{ github.event.inputs.mode || 'normal' }}"
           REBUILD=false
           if [ "$MODE" = "rebuild" ]; then REBUILD=true; fi
-          python ../code/scripts/fetch-daily.py --rebuild $REBUILD --max-minutes 320
+          # 双保险：脚本内再探一次（与 workflow 探测之间 baostock 也可能刚写上）
+          REQUIRE_TODAY=false
+          if [ "${{ github.event_name }}" = "schedule" ]; then REQUIRE_TODAY=true; fi
+          python ../code/scripts/fetch-daily.py --rebuild $REBUILD --require-today $REQUIRE_TODAY --max-minutes 320
 
       - name: Build screening shards
-        if: always()
+        if: (github.event_name != 'schedule' || steps.probe.outputs.ready == 'true') && always()
         working-directory: site
         run: |
           if [ -d data/stocks ]; then python ../code/scripts/build-screen.py; fi
 
       - name: Publish (single commit, history never grows)
-        if: always()
+        if: (github.event_name != 'schedule' || steps.probe.outputs.ready == 'true') && always()
         run: bash code/scripts/site.sh publish
