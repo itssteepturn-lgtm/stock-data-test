@@ -14,7 +14,8 @@ v3 相对 v2 的改动：
   3. 新增 avg 序列（修正后的均价），以后想换算法重算 zq 也有依据。
   4. 断点续抓：每做完 500 只保存一批（--unit 500）；到时间上限也会把手上这一批存下来；下次运行接着做。
   5. 格式版本 fmt=3；发现旧格式(fmt<3)的数据会整体作废并重做（旧数据里的 zq 是错的）。
-继承 v2 的全部稳定性设计：只抓A股代码、登录/登出带超时、看门狗、无数据代码记下不再重试、全部完成后按字节拼成下载文件。
+  6. 下载文件按 --max-mb（默认 4MB）上限切割；可用 --resplit-only 对已有数据重新切割，不必重新抓取。
+继承 v2 的全部稳定性设计：只抓A股代码、登录/登出带超时、看门狗、无数据代码记下不再重试、全部完成后按字节上限拼成下载文件。
 
 文件格式（解压后，一个文件里可能连着多个块）：
   b'RSH1' + u32 头长度 + u32 数据长度 + 头(JSON) + 数据
@@ -31,21 +32,30 @@ import struct
 import sys
 import threading
 import time
-import numpy as np
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 HERE = pathlib.Path(__file__).resolve().parent
-import importlib.util
-_spec = importlib.util.spec_from_file_location("fd", HERE / "fetch-daily.py")
-fd = importlib.util.module_from_spec(_spec)
-_spec.loader.exec_module(fd)
-
 OUT_DIR = pathlib.Path("data/research")
 SERIES = ["open", "high", "low", "close", "vol", "turn", "avg", "c50", "c75", "c90", "zq", "zq1", "hlb50", "hlb75", "hlb90"]
 SCALES = {"open": 1000, "high": 1000, "low": 1000, "close": 1000, "vol": 1, "turn": 100, "avg": 1000,
           "c50": 1000, "c75": 1000, "c90": 1000, "zq": 100, "zq1": 100, "hlb50": 100, "hlb75": 100, "hlb90": 100}
 FMT = 3
 STOCK_PREFIXES = ("600", "601", "603", "605", "688", "000", "001", "002", "003", "300", "301")
+
+fd = None  # 抓取时才加载 fetch-daily / baostock；--resplit-only 不需要
+
+
+def load_fd():
+    """延迟加载 baostock 依赖，便于只重切下载文件时不装 baostock。"""
+    global fd
+    if fd is not None:
+        return fd
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("fd", HERE / "fetch-daily.py")
+    mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(mod)
+    fd = mod
+    return fd
 
 
 def log(*a):
@@ -113,13 +123,10 @@ def robust_relogin():
     return False
 
 
-fd._relogin = robust_relogin     # fd.call_with_timeout 超时后调用的就是它
-
-
-
 def chip_series(O, H, L, C, V, T, avg, nb=300):
     """与 fetch-daily.py 的 ChipModel 同一套算法，输入的 avg 已经是与复权价同口径的均价。
     返回 c50/c75/c90/zq/zq1/hlb50/hlb75/hlb90（与输入等长；无效处为 nan）。"""
+    import numpy as np
     n = len(C)
     H = H.astype(np.float64); L = L.astype(np.float64); C = C.astype(np.float64); avg = avg.astype(np.float64)
     V = np.nan_to_num(V).astype(np.float64); T = np.nan_to_num(T).astype(np.float64)
@@ -159,6 +166,7 @@ def chip_series(O, H, L, C, V, T, avg, nb=300):
 
 def adjusted_avg(bars, raw_close):
     """把“成交额/成交量”(不复权均价)换算到前复权价的口径。返回 (avg数组, 是否用了不复权数据)"""
+    import numpy as np
     n = len(bars)
     C = np.array([b["close"] for b in bars], float); H = np.array([b["high"] for b in bars], float)
     L = np.array([b["low"] for b in bars], float); O = np.array([b["open"] for b in bars], float)
@@ -276,12 +284,143 @@ def parse_header(gz_path):
     return heads
 
 
+def dec_varint(buf, p):
+    x, s = 0, 0
+    while True:
+        b = buf[p]
+        p += 1
+        x |= (b & 0x7F) << s
+        if not (b & 0x80):
+            return x, p
+        s += 7
+
+
+def dec_row(buf, p, n):
+    vals, prev = [], 0
+    for _ in range(n):
+        x, p = dec_varint(buf, p)
+        if x == 0:
+            vals.append(None)
+            continue
+        z = x - 1
+        d = (z >> 1) if (z & 1) == 0 else -((z >> 1) + 1)
+        prev = prev + d
+        vals.append(prev)
+    return vals, p
+
+
+def parse_blocks(gz_path):
+    """解压下载/小片文件，返回 [(header, rows)]；rows[series][i] 为第 i 只股票的整段序列。"""
+    blob = gzip.open(gz_path, "rb").read()
+    p, blocks = 0, []
+    while p < len(blob):
+        if blob[p:p + 4] != b"RSH1":
+            raise ValueError(f"bad magic in {gz_path} at {p}")
+        hl, pl = struct.unpack("<II", blob[p + 4:p + 12])
+        h = json.loads(blob[p + 12:p + 12 + hl])
+        payload = blob[p + 12 + hl:p + 12 + hl + pl]
+        p += 12 + hl + pl
+        D, n, series = len(h["dates"]), len(h["codes"]), h["series"]
+        pp, rows = 0, {k: [] for k in series}
+        for k in series:
+            for _ in range(n):
+                vals, pp = dec_row(payload, pp, D)
+                rows[k].append(vals)
+        if pp != len(payload):
+            raise ValueError(f"payload leftover in {gz_path}: {pp}/{len(payload)}")
+        blocks.append((h, rows))
+    return blocks
+
+
+def encode_block(codes, names, dates, series, scales, rows_by_series):
+    payload = bytearray()
+    for k in series:
+        for row in rows_by_series[k]:
+            enc_row(row, payload)
+    header = json.dumps({"codes": codes, "names": {c: names.get(c, "") for c in codes},
+                         "dates": dates, "series": series, "scales": scales},
+                        ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    return b"RSH1" + struct.pack("<II", len(header), len(payload)) + header + bytes(payload)
+
+
+def load_stock_table(paths):
+    """把若干 s*/w* 文件里的股票展平成一张表（按文件顺序，同一 code 后者覆盖前者）。"""
+    order, seen = [], {}
+    names, dates, series, scales = {}, None, None, None
+    for path in paths:
+        for h, rows in parse_blocks(path):
+            if dates is None:
+                dates, series, scales = h["dates"], h["series"], h["scales"]
+            elif h["dates"] != dates or h["series"] != series:
+                raise ValueError(f"{path.name} 日期/序列与其它文件不一致")
+            names.update(h.get("names") or {})
+            for i, code in enumerate(h["codes"]):
+                entry = {k: rows[k][i] for k in series}
+                if code in seen:
+                    order[seen[code]] = None
+                seen[code] = len(order)
+                order.append((code, entry))
+    codes, table = [], {k: [] for k in series}
+    for item in order:
+        if item is None:
+            continue
+        code, entry = item
+        codes.append(code)
+        for k in series:
+            table[k].append(entry[k])
+    return codes, names, dates, series, scales, table
+
+
+def gzip_size_for_slice(codes, names, dates, series, scales, table, i, j):
+    rows = {k: table[k][i:j] for k in series}
+    return len(gzip.compress(encode_block(codes[i:j], names, dates, series, scales, rows), 9))
+
+
+def pack_download_files(codes, names, dates, series, scales, table, max_bytes, out_dir, files_dict):
+    """按字节上限把股票重新打成 s0.gz、s1.gz…；返回写出的文件名列表。"""
+    for old in list(out_dir.glob("s*.gz")) + list(out_dir.glob("w*.gz")):
+        old.unlink()
+        files_dict.pop(old.name, None)
+    written, i, n, nxt = [], 0, len(codes), 0
+    while i < n:
+        lo, hi = i + 1, n
+        # 至少 1 只；在不超过 max_bytes 的前提下尽量多装
+        best = i + 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            sz = gzip_size_for_slice(codes, names, dates, series, scales, table, i, mid)
+            if sz <= max_bytes:
+                best = mid
+                lo = mid + 1
+            else:
+                hi = mid - 1
+        if best == i + 1:
+            sz = gzip_size_for_slice(codes, names, dates, series, scales, table, i, best)
+            if sz > max_bytes:
+                log(f"警告：单只 {codes[i]} 压缩后 {sz} 字节已超过上限 {max_bytes}，仍单独成文件")
+        rows = {k: table[k][i:best] for k in series}
+        blob = encode_block(codes[i:best], names, dates, series, scales, rows)
+        gz = gzip.compress(blob, 9)
+        name = f"s{nxt}.gz"
+        write_bytes(out_dir / name, gz)
+        files_dict[name] = {"n": best - i, "bytes": len(gz)}
+        written.append(name)
+        log(f"写出 {name}：{best - i} 只 · {len(gz)/1048576:.2f}MB")
+        i, nxt = best, nxt + 1
+    return written
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--days", type=int, default=1300)
     ap.add_argument("--keep", type=int, default=760)
     ap.add_argument("--unit", type=int, default=500, help="每多少只保存一批（断点续抓的粒度）")
-    ap.add_argument("--merge-units", type=int, default=2, help="全部完成后，每多少个小片拼成一个下载文件")
+    ap.add_argument("--merge-units", type=int, default=0,
+                    help="兼容旧参数：>0 时仍按小片个数拼接；默认 0 表示改用 --max-mb")
+    ap.add_argument("--max-mb", type=float, default=4.0,
+                    help="全部完成后，每个下载文件的大小上限（MB）。重新切割不必重新抓取。")
+    ap.add_argument("--resplit-only", type=str, default="false",
+                    help="true=不登录、不抓取，只把已有 s*/w* 按 --max-mb 重新切割")
     ap.add_argument("--max-minutes", type=float, default=300)
     ap.add_argument("--watchdog-extra-min", type=float, default=6)
     ap.add_argument("--rebuild", type=str, default="false")
@@ -290,8 +429,17 @@ def main(argv=None):
     ap.add_argument("--min-codes", type=int, default=3000, help="股票列表少于这个数就认为异常并终止")
     args = ap.parse_args(argv)
     rebuild = args.rebuild.lower() in ("true", "1", "yes")
+    resplit_only = args.resplit_only.lower() in ("true", "1", "yes")
+    max_bytes = int(args.max_mb * 1024 * 1024)
     t_start = time.time()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    if resplit_only:
+        return resplit_existing(max_bytes, OUT_DIR)
+
+    load_fd()
+    import numpy as np  # noqa: F401  — chip/adjusted_avg 会再导入；这里确保依赖在登录前就绪
+    fd._relogin = robust_relogin     # fd.call_with_timeout 超时后调用的就是它
 
     def watchdog():
         log(f"看门狗：已超过 {args.max_minutes + args.watchdog_extra_min} 分钟，强制结束（已保存的小片都在，下次接着做）")
@@ -418,6 +566,7 @@ def main(argv=None):
 
     def build_row(code, bars, raw):
         try:
+            import numpy as np
             avg, used_raw = adjusted_avg(bars, raw)
             O = np.array([x["open"] for x in bars], float); H = np.array([x["high"] for x in bars], float)
             Lw = np.array([x["low"] for x in bars], float); C = np.array([x["close"] for x in bars], float)
@@ -507,27 +656,84 @@ def main(argv=None):
             fails[c] = fails.get(c, 0) + 1
     remaining = [c for c in codes if c not in covered and c not in empty and fails.get(c, 0) < 2]
     if not stopped and not remaining:
-        # 全部完成：把小片按字节拼成约10MB的下载文件（旧分片 s*.gz 原样保留）
+        # 全部完成：把小片打成不超过 --max-mb 的下载文件（也可按旧参数 --merge-units 拼接）
         units = sorted([n for n in files if n.startswith("w")], key=lambda n: int(n[1:-3]))
-        nxt = max([int(n[1:-3]) for n in files if n.startswith("s")] + [-1]) + 1
-        for i in range(0, len(units), args.merge_units):
-            grp = units[i:i + args.merge_units]
-            data = b"".join((OUT_DIR / n).read_bytes() for n in grp)
-            name = f"s{nxt}.gz"
-            write_bytes(OUT_DIR / name, data)
-            files[name] = {"n": sum(files[n]["n"] for n in grp), "bytes": len(data)}
-            for n in grp:
-                (OUT_DIR / n).unlink()
-                del files[n]
-            nxt += 1
+        if args.merge_units and args.merge_units > 0:
+            nxt = max([int(n[1:-3]) for n in files if n.startswith("s")] + [-1]) + 1
+            for i in range(0, len(units), args.merge_units):
+                grp = units[i:i + args.merge_units]
+                data = b"".join((OUT_DIR / n).read_bytes() for n in grp)
+                name = f"s{nxt}.gz"
+                write_bytes(OUT_DIR / name, data)
+                files[name] = {"n": sum(files[n]["n"] for n in grp), "bytes": len(data)}
+                for n in grp:
+                    (OUT_DIR / n).unlink()
+                    del files[n]
+                nxt += 1
+            log(f"全部完成，已按 merge-units={args.merge_units} 拼成下载文件")
+        else:
+            paths = [OUT_DIR / n for n in sorted([n for n in files if n.startswith("s")], key=lambda n: int(n[1:-3]))]
+            paths += [OUT_DIR / n for n in units]
+            scodes, snames, sdates, sseries, sscales, stable = load_stock_table(paths)
+            pack_download_files(scodes, snames, sdates, sseries, sscales, stable, max_bytes, OUT_DIR, files)
+            covered.clear()
+            covered.update(scodes)
+            log(f"全部完成，已按 ≤{args.max_mb}MB 切成下载文件")
         state["complete"] = True
-        log("全部完成，已拼成下载文件")
     save_meta()
     log(f"本次结束：覆盖 {len(covered)} 只，无数据 {len(empty)} 只，待重试 {len(remaining)} 只，complete={state['complete']}，用时 {(time.time()-t_start)/60:.0f} 分钟")
     try:
         with_timeout(fd.bs.logout, 15)
     except Exception:
         pass
+    return 0
+
+
+def resplit_existing(max_bytes, out_dir=OUT_DIR):
+    """不重新抓取：读取已有 s*/w*，按字节上限重切下载文件，并更新 meta.json。"""
+    meta_path = out_dir / "meta.json"
+    if not meta_path.exists():
+        log("没有 meta.json，无法重切")
+        return 1
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        log(f"meta.json 读取失败：{e}")
+        return 1
+    paths = sorted(out_dir.glob("s*.gz"), key=lambda p: int(p.name[1:-3]))
+    paths += sorted(out_dir.glob("w*.gz"), key=lambda p: int(p.name[1:-3]))
+    if not paths:
+        log("没有 s*.gz / w*.gz，无法重切")
+        return 1
+    log(f"重切：读取 {len(paths)} 个文件，上限 {max_bytes/1048576:.2f}MB（不重新抓取）")
+    try:
+        codes, names, dates, series, scales, table = load_stock_table(paths)
+    except Exception as e:
+        log(f"读取已有数据失败：{e}")
+        return 1
+    files = {}
+    written = pack_download_files(codes, names, dates, series, scales, table, max_bytes, out_dir, files)
+    parts = sorted(written, key=lambda n: int(n[1:-3]))
+    meta.update({
+        "fmt": meta.get("fmt", FMT),
+        "series": series,
+        "scales": scales,
+        "cal_first": dates[0],
+        "cal_last": dates[-1],
+        "days": len(dates),
+        "covered": len(codes),
+        "target": len(codes),
+        "complete": True,
+        "units": 0,
+        "files": [{"f": n, "n": files[n]["n"], "bytes": files[n]["bytes"]} for n in parts],
+        "total": len(parts),
+        "done": len(parts),
+        "max_mb": round(max_bytes / 1048576, 2),
+        "updated": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    })
+    write_bytes(meta_path, json.dumps(meta, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+    total_mb = sum(files[n]["bytes"] for n in parts) / 1048576
+    log(f"重切完成：{len(codes)} 只 → {len(parts)} 个文件，共 {total_mb:.1f}MB，均 ≤{max_bytes/1048576:.2f}MB")
     return 0
 
 
