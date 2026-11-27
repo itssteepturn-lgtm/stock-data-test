@@ -2,6 +2,7 @@ name: research-data
 
 # 手动运行：生成约3年的研究数据（开/高/低/收/成交量/换手率/均价 + cost50/75/90 + zq/zq1 + HLB50/75/90），放进网页的 data/research/ 供下载。
 # v3：已修正 zq 的复权错位；每做完 500 只保存一批，可断点续抓。
+# 下载文件默认按 4MB 上限切割。若只想把已有大文件重新切小，选 resplit_only=true（不重新抓取）。
 # 和每日更新(update-data)互不影响；可能需要 3~6 小时。每做完 500 只保存一批，没做完也没关系：再运行一次会接着做。
 on:
   workflow_dispatch:
@@ -14,6 +15,19 @@ on:
         options:
           - 'false'
           - 'true'
+      resplit_only:
+        description: 'false=正常抓取/续抓  true=不抓取，只按 max_mb 重切已有下载文件'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+      max_mb:
+        description: '每个下载文件大小上限（MB）'
+        required: false
+        default: '4'
+        type: string
 
 concurrency:
   group: site-publish
@@ -41,10 +55,17 @@ jobs:
       - name: Load previous data (gh-pages)
         run: bash code/scripts/site.sh prepare
 
+      - name: Resplit existing research downloads (no fetch)
+        if: ${{ github.event.inputs.resplit_only == 'true' }}
+        timeout-minutes: 30
+        working-directory: site
+        run: python ../code/scripts/fetch-research.py --resplit-only true --max-mb "${{ github.event.inputs.max_mb || '4' }}"
+
       - name: Fetch 3-year research data (baostock)
+        if: ${{ github.event.inputs.resplit_only != 'true' }}
         timeout-minutes: 335
         working-directory: site
-        run: python ../code/scripts/fetch-research.py --rebuild "${{ github.event.inputs.rebuild || 'false' }}" --unit 500 --max-minutes 300
+        run: python ../code/scripts/fetch-research.py --rebuild "${{ github.event.inputs.rebuild || 'false' }}" --unit 500 --max-mb "${{ github.event.inputs.max_mb || '4' }}" --max-minutes 300
 
       - name: Publish (single commit, history never grows)
         if: always()
